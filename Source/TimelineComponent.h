@@ -118,8 +118,6 @@ public:
         volumeSlider.setValue(track.gain, juce::dontSendNotification);
         volumeSlider.setSliderStyle(juce::Slider::LinearHorizontal);
         volumeSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-        volumeSlider.setColour(juce::Slider::thumbColourId, juce::Colours::lightgrey);
-        volumeSlider.setColour(juce::Slider::trackColourId, juce::Colour(0xff18181e));
         volumeSlider.onValueChange = [this]
         {
             track.gain = (float)volumeSlider.getValue();
@@ -385,7 +383,7 @@ public:
         auto bounds = getLocalBounds();
         
         auto controlArea = bounds.removeFromLeft(headerWidth);
-        g.setColour(isTrackSelected ? juce::Colour(0xff34343e) : juce::Colour(0xff28282f));
+        g.setColour(isTrackSelected ? juce::Colour(0xff2c303c) : juce::Colour(0xff21242d));
         g.fillRect(controlArea);
 
         auto numCol = controlArea.removeFromLeft(24);
@@ -396,7 +394,7 @@ public:
         g.drawText(juce::String(index + 1), numCol, juce::Justification::centred);
 
         auto meterCol = controlArea.removeFromRight(10).reduced(2, 4);
-        g.setColour(juce::Colour(0xff141418));
+        g.setColour(juce::Colour(0xff101116));
         g.fillRect(meterCol);
         float peak = juce::jlimit(0.0f, 1.0f, track.currentPeakLevel.load());
         if (peak > 0.005f)
@@ -406,10 +404,10 @@ public:
             g.fillRect(meterCol.removeFromBottom(h));
         }
 
-        g.setColour(juce::Colour(0xff18181d));
+        g.setColour(juce::Colour(0xff14161c));
         g.drawRect(0, 0, headerWidth, getHeight(), 1);
 
-        g.setColour(index % 2 == 0 ? juce::Colour(0xff232328) : juce::Colour(0xff26262c));
+        g.setColour(index % 2 == 0 ? juce::Colour(0xff181a20) : juce::Colour(0xff1b1d24));
         g.fillRect(bounds);
 
         if (showGridLines)
@@ -424,15 +422,15 @@ public:
                 if (gridX > getWidth()) break;
 
                 int stepsPerBar = 4 * gridDivision;
-                if (step % stepsPerBar == 0)       g.setColour(juce::Colour(0xff42424d));
-                else if (step % gridDivision == 0) g.setColour(juce::Colour(0xff303039));
-                else                               g.setColour(juce::Colour(0xff282830));
+                if (step % stepsPerBar == 0)       g.setColour(juce::Colour(0xff363a48));
+                else if (step % gridDivision == 0) g.setColour(juce::Colour(0xff262934));
+                else                               g.setColour(juce::Colour(0xff1f222b));
 
                 g.drawVerticalLine(gridX, (float)bounds.getY(), (float)bounds.getBottom());
             }
         }
 
-        g.setColour(juce::Colour(0xff19191e));
+        g.setColour(juce::Colour(0xff121318));
         g.drawHorizontalLine(bounds.getBottom() - 1, (float)bounds.getX(), (float)bounds.getRight());
 
         for (auto* clip : track.getClips())
@@ -443,10 +441,10 @@ public:
             bool isSelected = (clip == selectedAudioClip) || selectAllItemsActive;
 
             g.setColour(isSelected ? trackAccentColour.brighter(0.15f) : trackAccentColour.withBrightness(0.48f));
-            g.fillRoundedRectangle(clipRect.toFloat(), 3.0f);
+            g.fillRoundedRectangle(clipRect.toFloat(), 4.0f);
 
             auto titleStrip = clipRect.withHeight(16);
-            g.setColour(juce::Colours::black.withAlpha(0.32f));
+            g.setColour(juce::Colours::black.withAlpha(0.35f));
             g.fillRect(titleStrip);
 
             if (auto it = thumbnails.find(clip->id); it != thumbnails.end())
@@ -489,7 +487,7 @@ public:
             }
 
             g.setColour(isSelected ? juce::Colours::white : juce::Colours::black.withAlpha(0.7f));
-            g.drawRoundedRectangle(clipRect.toFloat(), 3.0f, isSelected ? 1.8f : 1.0f);
+            g.drawRoundedRectangle(clipRect.toFloat(), 4.0f, isSelected ? 1.8f : 1.0f);
 
             juce::String titleText = clip->audioFile.getFileNameWithoutExtension();
             if (clip->takes.size() > 1)
@@ -500,6 +498,51 @@ public:
             g.drawText(titleText, titleStrip.reduced(6, 0), juce::Justification::centredLeft, true);
         }
 
+        if (track.isCurrentlyRecording())
+        {
+            double recStart = track.getLiveRecordingStartSec();
+            double recDur   = track.getLiveRecordingDurationSec();
+            int rx = headerWidth + (int)std::round(recStart * pixelsPerSecond);
+            int rw = juce::jmax(10, (int)std::round(recDur * pixelsPerSecond));
+            auto liveRect = juce::Rectangle<int>(rx, 3, rw, getHeight() - 6);
+
+            if (liveRect.intersects(bounds))
+            {
+                g.setColour(juce::Colour(0xff9b1c26).withAlpha(0.82f));
+                g.fillRoundedRectangle(liveRect.toFloat(), 4.0f);
+
+                auto headerStrip = liveRect.withHeight(16);
+                g.setColour(juce::Colours::black.withAlpha(0.45f));
+                g.fillRect(headerStrip);
+
+                g.setColour(juce::Colours::white);
+                g.setFont(juce::FontOptions(10.5f, juce::Font::bold));
+                g.drawText("● GRAVANDO AO VIVO...", headerStrip.reduced(6, 0), juce::Justification::centredLeft, true);
+
+                auto peaks = track.getLiveRecordingPeaksSnapshot();
+                if (!peaks.empty())
+                {
+                    auto waveArea = liveRect.withTrimmedTop(16).reduced(1, 2);
+                    float midY = (float)waveArea.getCentreY();
+                    float halfH = (float)waveArea.getHeight() * 0.48f;
+
+                    g.setColour(juce::Colour(0xffffccd5));
+                    int numPeaks = (int)peaks.size();
+                    for (int px = 0; px < waveArea.getWidth(); ++px)
+                    {
+                        int pIdx = (int)(((double)px / (double)juce::jmax(1, waveArea.getWidth())) * (double)numPeaks);
+                        pIdx = juce::jlimit(0, numPeaks - 1, pIdx);
+                        float amp = juce::jlimit(0.02f, 1.0f, peaks[(size_t)pIdx]);
+                        float lineH = amp * halfH;
+                        g.drawVerticalLine(waveArea.getX() + px, midY - lineH, midY + lineH);
+                    }
+                }
+
+                g.setColour(juce::Colour(0xffff4d6d));
+                g.drawRoundedRectangle(liveRect.toFloat(), 4.0f, 1.8f);
+            }
+        }
+
         for (auto* mc : track.getMidiClips())
         {
             auto mcRect = getMidiClipBounds(*mc);
@@ -508,9 +551,9 @@ public:
             bool isSelected = (mc == selectedMidiClip) || selectAllItemsActive;
 
             g.setColour(isSelected ? juce::Colour(0xff2b9348) : juce::Colour(0xff1e6b36));
-            g.fillRoundedRectangle(mcRect.toFloat(), 3.0f);
+            g.fillRoundedRectangle(mcRect.toFloat(), 4.0f);
             g.setColour(isSelected ? juce::Colours::white : juce::Colour(0xff55a630));
-            g.drawRoundedRectangle(mcRect.toFloat(), 3.0f, isSelected ? 1.8f : 1.0f);
+            g.drawRoundedRectangle(mcRect.toFloat(), 4.0f, isSelected ? 1.8f : 1.0f);
 
             for (const auto& note : mc->notes)
             {
@@ -532,8 +575,8 @@ public:
         float playheadX = (float)headerWidth + (float)(currentPlayheadSec * pixelsPerSecond);
         if (playheadX >= (float)headerWidth && playheadX <= (float)getWidth())
         {
-            g.setColour(juce::Colour(0xffe63946));
-            g.drawLine(playheadX, (float)bounds.getY(), playheadX, (float)bounds.getBottom(), 1.5f);
+            g.setColour(juce::Colour(0xff00f5d4));
+            g.drawLine(playheadX, (float)bounds.getY(), playheadX, (float)bounds.getBottom(), 1.6f);
         }
     }
 
