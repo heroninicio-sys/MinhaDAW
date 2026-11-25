@@ -1,4 +1,5 @@
 #include <JuceHeader.h>
+#include "PluginScanner.h"
 #include "MainComponent.h"
 
 class MinhaDAWApplication : public juce::JUCEApplication
@@ -6,10 +7,19 @@ class MinhaDAWApplication : public juce::JUCEApplication
 public:
     const juce::String getApplicationName() override       { return "MinhaDAW Studio"; }
     const juce::String getApplicationVersion() override    { return "1.0.0"; }
-    bool moreThanOneInstanceAllowed() override             { return false; }
+    bool moreThanOneInstanceAllowed() override             { return true; }
 
-    void initialise(const juce::String&) override
+    void initialise(const juce::String& commandLine) override
     {
+        // Se foi iniciado como worker de varredura de plugin, testa o plugin e encerra sem abrir janela
+        int workerExit = PluginScannerEngine::runWorkerProcessIfRequested(commandLine);
+        if (workerExit >= 0)
+        {
+            setApplicationReturnValue(workerExit);
+            quit();
+            return;
+        }
+
         mainWindow.reset(new MainWindow(getApplicationName()));
     }
 
