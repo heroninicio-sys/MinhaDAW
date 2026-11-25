@@ -23,7 +23,7 @@ public:
         addNativeBtn.onClick = [this] { showNativeMenu(); };
 
         addAndMakeVisible(addVstBtn);
-        addVstBtn.setButtonText("+ VST / VST2 / VST3");
+        addVstBtn.setButtonText("+ Plugin VST3");
         addVstBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff5c4b7d));
         addVstBtn.onClick = [this] { showScannedPluginsMenu(); };
 
@@ -112,7 +112,7 @@ public:
         if (rowItems.isEmpty())
         {
             g.setColour(juce::Colours::grey);
-            g.drawText("Rack Vazio - Adicione Plugins Nativos ou VST / VST2 / VST3",
+            g.drawText("Rack Vazio - Adicione Plugins Nativos ou VST3",
                        getLocalBounds().reduced(20), juce::Justification::centred);
         }
     }
@@ -185,28 +185,20 @@ private:
 
         if (types.isEmpty())
         {
-            menu.addItem(9999, scanner.isScanning() ? "Escaneando pastas... aguarde" : "Nenhum plugin no cache ainda", false);
+            menu.addItem(9999, scanner.isScanning() ? "Escaneando pastas... aguarde" : "Nenhum VST3 encontrado no cache", false);
         }
         else
         {
-            juce::PopupMenu vst2Menu, vst3Menu;
             for (int i = 0; i < types.size(); ++i)
             {
                 const auto& desc = types.getReference(i);
-                juce::String label = desc.name + " (" + desc.manufacturerName + ")";
-                if (desc.pluginFormatName.containsIgnoreCase("VST3"))
-                    vst3Menu.addItem(i + 1, label);
-                else
-                    vst2Menu.addItem(i + 1, label);
+                menu.addItem(i + 1, desc.name + " (" + desc.manufacturerName + ")");
             }
-
-            if (vst3Menu.getNumItems() > 0) menu.addSubMenu("Plugins VST3 (" + juce::String(vst3Menu.getNumItems()) + ")", vst3Menu);
-            if (vst2Menu.getNumItems() > 0) menu.addSubMenu("Plugins VST / VST2 (" + juce::String(vst2Menu.getNumItems()) + ")", vst2Menu);
         }
 
         menu.addSeparator();
-        menu.addItem(8001, "Procurar arquivo manualmente (.dll ou .vst3)...");
-        menu.addItem(8002, "Re-escanear pastas de plugins agora");
+        menu.addItem(8001, "Procurar arquivo .vst3 manualmente...");
+        menu.addItem(8002, "Re-escanear pastas VST3 agora");
 
         menu.showMenuAsync(juce::PopupMenu::Options(), [this, types](int res)
         {
