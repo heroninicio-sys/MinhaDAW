@@ -206,7 +206,6 @@ public:
         if (!ctrl && alt && !shift && ch == 'x') { autoCrossfadeEnabled = !autoCrossfadeEnabled; repaint(regionArea); return true; }
         if (!ctrl && alt && shift && ch == 'x') { autoCrossfadeEnabled = !autoCrossfadeEnabled; repaint(regionArea); return true; }
         if (!ctrl && !alt && !shift && ch == 'l') { itemsLocked = !itemsLocked; updateGridParameters(); return true; }
-        if (!ctrl && !alt && !shift && ch == 'g') { snapBtn.triggerClick(); return true; }
         if (!ctrl && alt && !shift && ch == 'n') { snapBtn.triggerClick(); return true; }
 
         if (ctrl && shift && !alt)
@@ -398,7 +397,7 @@ public:
         if (masterTrack != nullptr)
             masterTrack->prepareToPlay(currentBlockSize, currentSampleRate);
 
-        for (auto* track : tracks)
+        for (AudioTrack* track : tracks)
             track->prepareToPlay(currentBlockSize, currentSampleRate);
     }
 
@@ -415,12 +414,12 @@ public:
         const juce::ScopedLock sl(trackLock);
 
         bool anySolo = false;
-        for (auto* track : tracks)
+        for (AudioTrack* track : tracks)
             if (track->isSoloed) { anySolo = true; break; }
 
         double currentBpm = currentBpmAtomic.load();
 
-        for (auto* track : tracks)
+        for (AudioTrack* track : tracks)
         {
             track->processTrack(bufferToFill,
                                 inputCopy.getArrayOfReadPointers(),
@@ -480,7 +479,7 @@ public:
         const juce::ScopedLock sl(trackLock);
         if (masterTrack != nullptr)
             masterTrack->releaseResources();
-        for (auto* track : tracks)
+        for (AudioTrack* track : tracks)
             track->releaseResources();
     }
 
@@ -713,7 +712,7 @@ private:
     void openTrackContextMenu(int trackIdx, TrackRowComponent& rowComp)
     {
         if (trackIdx < 0 || trackIdx >= tracks.size()) return;
-        auto* t = tracks[trackIdx];
+        AudioTrack* t = tracks[trackIdx];
 
         juce::PopupMenu spacerSub;
         spacerSub.addItem(101, "Insert spacer before tracks");
@@ -733,7 +732,7 @@ private:
         menu.addItem(1, t->pinnedToTop ? "Unpin track from top" : "Pin tracks to top of arrange view");
         menu.addSubMenu("Visual spacer", spacerSub);
         menu.addSeparator();
-        menu.addItem(2, "Insert new track", true, false, "Ctrl+T");
+        menu.addItem(2, "Insert new track\tCtrl+T");
         menu.addItem(3, "Insert new track as first track");
         menu.addItem(4, "Insert new track at end of track list");
         menu.addSeparator();
@@ -751,7 +750,7 @@ private:
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&rowComp), [this, trackIdx](int res)
         {
             if (res == 0 || trackIdx < 0 || trackIdx >= tracks.size()) return;
-            auto* tr = tracks[trackIdx];
+            AudioTrack* tr = tracks[trackIdx];
 
             switch (res)
             {
@@ -811,7 +810,7 @@ private:
     {
         if (selectedRow == nullptr) return;
         auto& tr = selectedRow->getTrack();
-        tr.showVolumeEnvelope = !tr->showVolumeEnvelope;
+        tr.showVolumeEnvelope = !tr.showVolumeEnvelope;
         if (tr.showVolumeEnvelope && tr.getVolumeEnvelopeCopy().empty())
             tr.addOrUpdateVolumeEnvelopePoint(0.0, tr.gain);
         selectedRow->repaint();
@@ -833,7 +832,7 @@ private:
 
     void showAllEnvelopes(bool show)
     {
-        for (auto* tr : tracks)
+        for (AudioTrack* tr : tracks)
         {
             tr->showVolumeEnvelope = show;
             if (show && tr->getVolumeEnvelopeCopy().empty())
@@ -1025,7 +1024,7 @@ private:
         trackRows.clear(true);
         for (int idx = 0; idx < tracks.size(); ++idx)
         {
-            auto* t = tracks[idx];
+            AudioTrack* t = tracks[idx];
             auto* row = trackRows.add(new TrackRowComponent(
                 *t, idx, audioFormatManager, thumbnailCache, trackLock,
                 [this](AudioTrack& tr) { loadPluginForTrack(tr); },
@@ -1204,7 +1203,7 @@ private:
             addNewTrack();
 
         bool anyArmed = false;
-        for (auto* t : tracks)
+        for (AudioTrack* t : tracks)
             if (t->isArmed) { anyArmed = true; break; }
 
         if (!anyArmed)
@@ -1223,7 +1222,7 @@ private:
         auto recDir = juce::File::getSpecialLocation(juce::File::userMusicDirectory).getChildFile("MinhaDAW_Gravacoes");
         recDir.createDirectory();
 
-        for (auto* track : tracks)
+        for (AudioTrack* track : tracks)
         {
             if (track->isArmed)
             {
@@ -1263,7 +1262,7 @@ private:
         const juce::ScopedLock sl(trackLock);
         globalTimelineSeconds = juce::jmax(0.0, seconds);
         metronome.reset();
-        for (auto* track : tracks)
+        for (AudioTrack* track : tracks)
             track->sendAllNotesOff();
 
         for (auto* row : trackRows)
@@ -1303,7 +1302,7 @@ private:
             }
             else
             {
-                for (auto* track : tracks)
+                for (AudioTrack* track : tracks)
                     if (track->splitClipsAt(globalTimelineSeconds))
                         anySplit = true;
             }
