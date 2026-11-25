@@ -30,7 +30,6 @@ file(MAKE_DIRECTORY "${LAME_GEN_INC}")
 
 file(WRITE "${LAME_GEN_INC}/config.h" [=[
 #pragma once
-#define HAVE_CONFIG_H 1
 #define STDC_HEADERS 1
 #define HAVE_INTTYPES_H 1
 #define HAVE_STDINT_H 1
@@ -47,7 +46,6 @@ file(WRITE "${LAME_GEN_INC}/config.h" [=[
 #define HAVE_VSNPRINTF 1
 #define HAVE_SNPRINTF 1
 #define HAVE_ALLOCA 1
-#define TAKEHIRO_IEEE754_HACK 1
 #define LAME_LIBRARY_BUILD 1
 #define SIZEOF_SHORT 2
 #define SIZEOF_INT 4
@@ -55,14 +53,13 @@ file(WRITE "${LAME_GEN_INC}/config.h" [=[
 #define SIZEOF_LONG_LONG 8
 #define SIZEOF_FLOAT 4
 #define SIZEOF_DOUBLE 8
-#define inline __inline
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 ]=])
 
 file(GLOB LAME_C_FILES "${lame_src_SOURCE_DIR}/libmp3lame/*.c")
-list(FILTER LAME_C_FILES EXCLUDE REGEX ".*(mpglib|xmm_quantize_sub|i386|vector).*")
+list(FILTER LAME_C_FILES EXCLUDE REGEX ".*(mpglib|xmm_quantize_sub|i386|vector|fft3dn|tas).*")
 
 add_library(embedded_lame STATIC ${LAME_C_FILES})
 target_include_directories(embedded_lame PUBLIC
@@ -72,7 +69,7 @@ target_include_directories(embedded_lame PUBLIC
 )
 target_compile_definitions(embedded_lame PRIVATE HAVE_CONFIG_H=1 _CRT_SECURE_NO_WARNINGS)
 if(MSVC)
-    target_compile_options(embedded_lame PRIVATE /W0 /wd4244 /wd4267 /wd4305 /wd4996)
+    target_compile_options(embedded_lame PRIVATE /W0 /wd4244 /wd4267 /wd4305 /wd4996 /FI"${LAME_GEN_INC}/config.h")
 endif()
 
 juce_add_gui_app(MinhaDAW
