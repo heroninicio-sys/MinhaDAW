@@ -740,46 +740,51 @@ inline std::unique_ptr<juce::Component> MultiBandEQEffect::createEditor()
 
 inline std::unique_ptr<juce::Component> CompressorEffect::createEditor()
 {
-    return std::make_unique<GenericSliderEditor>("Compressor Dinamico", {
-        { "Threshold (dB)", -60.0f, 0.0f,   &thresholdDb },
-        { "Ratio (:1)",       1.0f,  20.0f,  &ratio },
-        { "Attack (ms)",      0.5f,  150.0f, &attackMs },
-        { "Release (ms)",     10.0f, 1000.0f,&releaseMs },
-        { "Makeup (dB)",      0.0f,  24.0f,  &makeupDb }
-    });
+    std::vector<GenericSliderEditor::ParamDef> p {
+        { "Threshold (dB)", -60.0f, 0.0f,    &thresholdDb },
+        { "Ratio (:1)",       1.0f,  20.0f,   &ratio },
+        { "Attack (ms)",      0.5f,  150.0f,  &attackMs },
+        { "Release (ms)",     10.0f, 1000.0f, &releaseMs },
+        { "Makeup (dB)",      0.0f,  24.0f,   &makeupDb }
+    };
+    return std::make_unique<GenericSliderEditor>("Compressor Dinamico", p);
 }
 
 inline std::unique_ptr<juce::Component> DistortionEffect::createEditor()
 {
-    return std::make_unique<GenericSliderEditor>("Distorcao / Overdrive", {
+    std::vector<GenericSliderEditor::ParamDef> p {
         { "Drive",       1.0f,  40.0f, &drive },
         { "Mix Dry/Wet", 0.0f,  1.0f,  &mix },
         { "Output (dB)", -24.0f, 6.0f, &outputDb }
-    });
+    };
+    return std::make_unique<GenericSliderEditor>("Distorcao / Overdrive", p);
 }
 
 inline std::unique_ptr<juce::Component> AutoTuneEffect::createEditor()
 {
-    return std::make_unique<GenericSliderEditor>("Auto-Tune Vocal (Correcao Cromatica)", {
+    std::vector<GenericSliderEditor::ParamDef> p {
         { "Retune Speed", 0.05f, 1.0f, &retuneSpeed },
         { "Mix Dry/Wet",  0.0f,  1.0f, &mix }
-    });
+    };
+    return std::make_unique<GenericSliderEditor>("Auto-Tune Vocal (Correcao Cromatica)", p);
 }
 
 inline std::unique_ptr<juce::Component> ReverbEffect::createEditor()
 {
-    return std::make_unique<GenericSliderEditor>("Reverb Stereo", {
+    std::vector<GenericSliderEditor::ParamDef> p {
         { "Room Size",   0.0f, 1.0f, &roomSize },
         { "Damping",     0.0f, 1.0f, &damping },
         { "Mix Wet",     0.0f, 1.0f, &wetLevel }
-    });
+    };
+    return std::make_unique<GenericSliderEditor>("Reverb Stereo", p);
 }
 
 inline std::unique_ptr<juce::Component> DelayEffect::createEditor()
 {
-    return std::make_unique<GenericSliderEditor>("Delay Stereo", {
+    std::vector<GenericSliderEditor::ParamDef> p {
         { "Tempo (ms)",  10.0f, 2000.0f, &delayTimeMs },
         { "Feedback",    0.0f,  0.90f,   &feedback },
         { "Mix Dry/Wet", 0.0f,  1.0f,    &mix }
-    });
+    };
+    return std::make_unique<GenericSliderEditor>("Delay Stereo", p);
 }
