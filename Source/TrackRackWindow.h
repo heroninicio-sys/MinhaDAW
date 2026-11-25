@@ -6,7 +6,7 @@
 class StudioKnobLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    StudioKnobLookAndFeel(juce::Colour neonCol) : ringColour(neonCol) {}
+    explicit StudioKnobLookAndFeel(juce::Colour neonCol) : ringColour(neonCol) {}
 
     void drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height,
                           float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
@@ -156,7 +156,6 @@ public:
         g.fillRoundedRectangle(b, 8.0f);
 
         bool isActive = powerBtn.getToggleState();
-        // Brilho externo neon colorido
         g.setColour(isActive ? neonColour.withAlpha(0.25f) : juce::Colours::transparentBlack);
         g.drawRoundedRectangle(b.expanded(1.0f), 9.0f, 3.0f);
         g.setColour(isActive ? neonColour.withAlpha(0.85f) : juce::Colour(0xff3a3c48));
@@ -501,23 +500,19 @@ private:
     void showNativeMenu()
     {
         juce::PopupMenu menu;
-        juce::PopupMenu eqSubMenu;
-        for (int b = 8; b <= 120; b += 8)
-            eqSubMenu.addItem(100 + b, "EQ " + juce::String(b) + " Canais/Bandas");
-
-        menu.addSubMenu("Equalizador Multi-Banda (8 a 120 ch)", eqSubMenu);
-        menu.addItem(1, "Compressor Dinamico");
-        menu.addItem(2, "Distorcao / Overdrive");
-        menu.addItem(3, "Auto-Tune Vocal (Pitch Correction)");
-        menu.addItem(4, "Reverb Stereo");
-        menu.addItem(5, "Delay Stereo");
+        menu.addItem(100, "Equalizador Multicanal");
+        menu.addItem(1,   "Compressor Dinamico");
+        menu.addItem(2,   "Distorcao / Overdrive");
+        menu.addItem(3,   "Auto-Tune Vocal (Pitch Correction)");
+        menu.addItem(4,   "Reverb Stereo");
+        menu.addItem(5,   "Delay Stereo");
 
         menu.showMenuAsync(juce::PopupMenu::Options(), [this](int res)
         {
             if (res == 0) return;
 
             std::unique_ptr<NativeEffect> fx;
-            if (res >= 108 && res <= 220) fx = std::make_unique<MultiBandEQEffect>(res - 100);
+            if (res == 100)     fx = std::make_unique<MultiChannelEQEffect>(16);
             else if (res == 1) fx = std::make_unique<CompressorEffect>();
             else if (res == 2) fx = std::make_unique<DistortionEffect>();
             else if (res == 3) fx = std::make_unique<AutoTuneEffect>();
