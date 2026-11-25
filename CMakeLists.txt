@@ -5,12 +5,38 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
+
+# 1. JUCE 8.0.4
 FetchContent_Declare(
     JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
     GIT_TAG        8.0.4
 )
 FetchContent_MakeAvailable(JUCE)
+
+# 2. Encoder MP3 LAME embutido nativamente no executável (elimina dependência de PATH/ffmpeg)
+FetchContent_Declare(
+    lame_src
+    GIT_REPOSITORY https://github.com/gypified/libmp3lame.git
+    GIT_TAG        master
+)
+FetchContent_GetProperties(lame_src)
+if(NOT lame_src_POPULATED)
+    FetchContent_Populate(lame_src)
+endif()
+
+file(GLOB LAME_C_FILES "${lame_src_SOURCE_DIR}/libmp3lame/*.c")
+list(FILTER LAME_C_FILES EXCLUDE REGEX ".*(mpglib|xmm_quantize_sub).*")
+
+add_library(embedded_lame STATIC ${LAME_C_FILES})
+target_include_directories(embedded_lame PUBLIC
+    "${lame_src_SOURCE_DIR}/include"
+    "${lame_src_SOURCE_DIR}/libmp3lame"
+)
+target_compile_definitions(embedded_lame PRIVATE HAVE_CONFIG_H=0 TAKEHIRO_IEEE754_HACK=1)
+if(MSVC)
+    target_compile_options(embedded_lame PRIVATE /W0 /wd4244 /wd4267 /wd4996)
+endif()
 
 juce_add_gui_app(MinhaDAW
     PRODUCT_NAME "MinhaDAW Studio"
@@ -22,6 +48,7 @@ juce_generate_juce_header(MinhaDAW)
 
 target_sources(MinhaDAW PRIVATE
     Source/Main.cpp
+    Source/StudioLookAndFeel.h
     Source/Metronome.h
     Source/PluginScanner.h
     Source/AudioClip.h
@@ -49,6 +76,7 @@ target_compile_definitions(MinhaDAW PRIVATE
 )
 
 target_link_libraries(MinhaDAW PRIVATE
+    embedded_lame
     juce::juce_audio_utils
     juce::juce_audio_processors
     juce::juce_dsp
