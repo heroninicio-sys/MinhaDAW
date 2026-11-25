@@ -41,7 +41,6 @@ target_compile_definitions(MinhaDAW PRIVATE
     JUCE_WASAPI=1
     JUCE_DIRECTSOUND=1
     JUCE_USE_MP3AUDIOFORMAT=1
-    JUCE_DISPLAY_SPLASH_SCREEN=0
 )
 
 target_link_libraries(MinhaDAW PRIVATE
@@ -51,5 +50,4 @@ target_link_libraries(MinhaDAW PRIVATE
     juce::juce_gui_extra
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
-    juce::juce_recommended_warning_flags
 )
