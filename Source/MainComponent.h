@@ -1,5 +1,8 @@
 #pragma once
 #include <JuceHeader.h>
+#include <cmath>
+#include <functional>
+#include <vector>
 #include "StudioLookAndFeel.h"
 #include "Metronome.h"
 #include "PluginScanner.h"
