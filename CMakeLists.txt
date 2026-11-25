@@ -34,6 +34,7 @@ target_sources(MinhaDAW PRIVATE
     Source/ProjectSerializer.h
     Source/TimelineComponent.h
     Source/MixerComponent.h
+    Source/WelcomeAndActions.h
     Source/MainComponent.h
 )
 
