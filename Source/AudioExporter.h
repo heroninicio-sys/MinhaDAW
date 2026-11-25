@@ -1,5 +1,8 @@
 #pragma once
 #include <JuceHeader.h>
+#include <cmath>
+#include <utility>
+#include <vector>
 #include "AudioTrack.h"
 
 struct ExportSettings
@@ -198,12 +201,9 @@ public:
 
             if (!ok)
             {
-                // Fallback seguro: salva como WAV caso não haja encoder externo para MP3/OGG/WMA
-                juce::File fallbackWav = outputFile.withFileExtension(".wav");
                 return "AVISO (" + settings.getFormatName() + "): Coloque 'ffmpeg.exe' na pasta do executavel para gerar " +
                        settings.getFormatName() + " direto em " + juce::String(settings.bitRateKbps) +
-                       " kbps. (Projeto renderizado em WAV de alta precisao a " +
-                       juce::String((int)settings.targetSampleRate) + " Hz).";
+                       " kbps (taxa " + juce::String((int)settings.targetSampleRate) + " Hz).";
             }
         }
 
