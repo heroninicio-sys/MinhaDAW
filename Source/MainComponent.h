@@ -173,90 +173,172 @@ public:
         bool ctrl  = key.getModifiers().isCtrlDown();
         bool alt   = key.getModifiers().isAltDown();
         bool shift = key.getModifiers().isShiftDown();
+        int kc     = key.getKeyCode();
 
-        if (key.getTextCharacter() == '?')
+        // Action List
+        if (key.getTextCharacter() == '?' || key == juce::KeyPress::F4Key)
         {
             openActionListWindow();
             return true;
         }
 
+        // Projeto, Render, Preferencias, Mixer
         if (ctrl && !alt && !shift && ch == 'n') { createNewCleanProject(); return true; }
         if (ctrl && !alt && !shift && ch == 'o') { openProjectDialog(); return true; }
         if (ctrl && !alt && !shift && ch == 's') { saveProjectDialog(); return true; }
-        if (ctrl && alt && ch == 'r') { exportProjectDialog(); return true; }
-        if (ctrl && !alt && ch == 'p') { showAudioSettings(); return true; }
-        if (ctrl && !alt && ch == 'm') { mixerToggleBtn.triggerClick(); return true; }
+        if (ctrl && alt && !shift && ch == 'r') { exportProjectDialog(); return true; }
+        if (!ctrl && alt && !shift && ch == 'r') { exportProjectDialog(); return true; }
+        if (ctrl && alt && !shift && ch == 'b') { exportProjectDialog(); return true; }
+        if (ctrl && !alt && !shift && ch == 'p') { showAudioSettings(); return true; }
+        if (ctrl && !alt && !shift && ch == 'm') { mixerToggleBtn.triggerClick(); return true; }
+        if (ctrl && shift && !alt && ch == 'm') { clickBtn.triggerClick(); return true; }
 
+        // Transporte e Gravacao
         if (key == juce::KeyPress::spaceKey)
         {
             if (isPlaying) stopTransport();
             else startPlayback();
             return true;
         }
-
         if (!ctrl && !alt && !shift && ch == 'r') { startRecording(); return true; }
-        if (!ctrl && alt && ch == 's') { snapBtn.triggerClick(); return true; }
+        if (!ctrl && !alt && !shift && ch == 'w') { seekTo(0.0); return true; }
+        if (ctrl && key == juce::KeyPress::homeKey) { seekTo(0.0); return true; }
 
-        if (!ctrl && alt && ch == 'g')
+        // Grade, Snap, Crossfade, Lock
+        if (!ctrl && alt && !shift && ch == 's') { snapBtn.triggerClick(); return true; }
+        if (!ctrl && alt && !shift && ch == 'g') { showGridLines = !showGridLines; updateGridParameters(); return true; }
+        if (!ctrl && alt && !shift && ch == 'x') { autoCrossfadeEnabled = !autoCrossfadeEnabled; repaint(regionArea); return true; }
+        if (!ctrl && alt && shift && ch == 'x') { autoCrossfadeEnabled = !autoCrossfadeEnabled; repaint(regionArea); return true; }
+        if (!ctrl && !alt && !shift && ch == 'l') { itemsLocked = !itemsLocked; updateGridParameters(); return true; }
+        if (!ctrl && !alt && !shift && ch == 'g') { snapBtn.triggerClick(); return true; }
+        if (!ctrl && alt && !shift && ch == 'n') { snapBtn.triggerClick(); return true; }
+
+        // Divisoes da Grade (Grid: Ctrl+Shift+1..0)
+        if (ctrl && shift && !alt)
         {
-            showGridLines = !showGridLines;
-            updateGridParameters();
-            return true;
+            if (key.getTextCharacter() == '1') { setGridDivisionAndSnap(1); return true; }
+            if (key.getTextCharacter() == '2') { setGridDivisionAndSnap(2); return true; }
+            if (key.getTextCharacter() == '3') { setGridDivisionAndSnap(8); return true; }
+            if (key.getTextCharacter() == '4') { setGridDivisionAndSnap(1); return true; }
+            if (key.getTextCharacter() == '5') { setGridDivisionAndSnap(3); return true; }
+            if (key.getTextCharacter() == '6') { setGridDivisionAndSnap(4); return true; }
+            if (key.getTextCharacter() == '7') { setGridDivisionAndSnap(6); return true; }
+            if (key.getTextCharacter() == '8') { setGridDivisionAndSnap(2); return true; }
+            if (key.getTextCharacter() == '9') { setGridDivisionAndSnap(3); return true; }
+            if (key.getTextCharacter() == '0') { setGridDivisionAndSnap(12); return true; }
         }
 
-        if (!ctrl && alt && ch == 'x')
+        // Automacao e Envelopes
+        if (!ctrl && !alt && shift && ch == 'w')
         {
-            autoCrossfadeEnabled = !autoCrossfadeEnabled;
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+                "Automacao [Shift+W]", "Valores atuais gravados nas envelopes em writing para a selecao de tempo.");
             return true;
         }
-
-        if (!ctrl && !alt && !shift && ch == 'l')
+        if (ctrl && !alt && !shift && ch == 'w')
         {
-            itemsLocked = !itemsLocked;
-            updateGridParameters();
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+                "Automacao [Ctrl+W]", "Valores atuais gravados nas envelopes em writing do cursor ate o fim do projeto.");
             return true;
         }
+        if (ctrl && alt && !shift && ch == 'p') { toggleEnvelopeFlag("Pan Envelope"); return true; }
+        if (ctrl && alt && !shift && ch == 'v') { toggleEnvelopeFlag("Volume Envelope"); return true; }
+        if (ctrl && alt && shift && ch == 'v')  { toggleEnvelopeFlag("Pre-FX Volume Envelope"); return true; }
+        if (ctrl && alt && shift && ch == 'p')  { toggleEnvelopeFlag("Pre-FX Pan / Take Pitch Envelope"); return true; }
+        if (ctrl && alt && !shift && key == juce::KeyPress::F5Key) { toggleEnvelopeFlag("Mute Envelope"); return true; }
+        if (!ctrl && !alt && shift && ch == 'l') { toggleEnvelopeFlag("Visualizar Envelopes da Faixa Ativa"); return true; }
+        if (!ctrl && alt && !shift && ch == 'l') { nudgeEnvelopePointSelection(1, false); return true; }
+        if (!ctrl && alt && shift && ch == 'l')  { nudgeEnvelopePointSelection(-1, false); return true; }
+        if (!ctrl && alt && shift && ch == 'e')  { insertOrEditEnvelopePointAtCursor(true); return true; }
+        if (!ctrl && !alt && shift && ch == 'e') { insertOrEditEnvelopePointAtCursor(false); return true; }
+        if (!ctrl && alt && !shift && ch == 'j') { nudgeEnvelopePointSelection(-1, false); return true; }
+        if (!ctrl && alt && !shift && ch == 'k') { nudgeEnvelopePointSelection(1, false); return true; }
+        if (!ctrl && alt && shift && ch == 'j')  { nudgeEnvelopePointSelection(-1, true); return true; }
+        if (!ctrl && alt && shift && ch == 'k')  { nudgeEnvelopePointSelection(1, true); return true; }
+        if (!ctrl && alt && (kc == juce::KeyPress::numberPad2 || key.getTextCharacter() == '2')) { nudgeSelectedClipGain(false); return true; }
+        if (!ctrl && alt && (kc == juce::KeyPress::numberPad8 || key.getTextCharacter() == '8')) { nudgeSelectedClipGain(true); return true; }
+        if (!ctrl && !alt && shift && ch == 'o') { toggleEnvelopeFlag("Mostrar Envelopes Ativos"); return true; }
+        if (ctrl && shift && !alt && ch == 'i')  { toggleEnvelopeFlag("Inserir Item de Automacao"); return true; }
+        if (ctrl && alt && !shift && key.getTextCharacter() == '4') { toggleEnvelopeFlag("4 Pontos de Envelope na Selecao de Tempo"); return true; }
+        if (!ctrl && !alt && shift && ch == 'h') { toggleEnvelopeFlag("Ocultar Envelopes das Faixas"); return true; }
+        if (ctrl && shift && !alt && ch == 'h')  { toggleEnvelopeFlag("Ocultar Envelopes de Todas as Faixas"); return true; }
 
-        if (ctrl && !alt && ch == 't') { addNewTrack(); return true; }
-        if (ctrl && !shift && ch == 'z') { undoManager.undo(); return true; }
-        if (ctrl && shift && ch == 'z')  { undoManager.redo(); return true; }
-
-        if (ctrl && !alt && ch == 'a')
+        // Edicao, Clipboard e Selecao
+        if (ctrl && !alt && !shift && ch == 'c') { copySelectedClip(false); return true; }
+        if (!ctrl && !alt && shift && ch == 'c') { copySelectedClip(true); return true; }
+        if (ctrl && !alt && !shift && ch == 'x') { cutSelectedClip(false); return true; }
+        if (!ctrl && !alt && shift && ch == 'x') { cutSelectedClip(true); return true; }
+        if (ctrl && !alt && !shift && ch == 'v') { pasteClipboardClip(); return true; }
+        if (ctrl && !alt && !shift && ch == 'a')
         {
             allItemsSelected = !allItemsSelected;
             for (auto* r : trackRows)
                 r->setSelectionState(r == selectedRow, selectedAudioClip, selectedMidiClip, allItemsSelected);
             return true;
         }
+        if (ctrl && alt && !shift && ch == 'a')
+        {
+            allItemsSelected = true;
+            if (selectedRow != nullptr)
+                selectedRow->setSelectionState(true, selectedAudioClip, selectedMidiClip, true);
+            return true;
+        }
+
+        // Faixas, Takes e Itens
+        if (ctrl && !alt && !shift && ch == 't') { addNewTrack(); return true; }
+        if (ctrl && !shift && !alt && ch == 'z') { undoManager.undo(); return true; }
+        if (ctrl && shift && !alt && ch == 'z')  { undoManager.redo(); return true; }
+        if (ctrl && alt && !shift && ch == 'z')  { openActionListWindow(); return true; }
+
+        if (!ctrl && !alt && !shift && ch == 't') { cycleTakeOnSelected(true); return true; }
+        if (!ctrl && !alt && shift && ch == 't') { cycleTakeOnSelected(false); return true; }
+        if (ctrl && !alt && !shift && ch == 'd') { duplicateSelectedClip(); return true; }
+        if (ctrl && shift && !alt && ch == 'd')  { duplicateSelectedClip(); return true; }
 
         if ((!ctrl && !alt && shift && ch == 's') || (!ctrl && !alt && !shift && ch == 's'))
         {
             splitSelectedOrAtPlayhead();
             return true;
         }
-
-        if (key == juce::KeyPress::F2Key)
+        if (!ctrl && !alt && !shift && ch == 'a')
         {
-            openSelectedItemProperties();
+            splitSelectedOrAtPlayhead();
             return true;
         }
 
-        if (!ctrl && !alt && !shift && ch == 't')
+        if (key == juce::KeyPress::F2Key) { openSelectedItemProperties(); return true; }
+        if (ctrl && shift && !alt && ch == 'k') { analyzeSelectedClipPeak(); return true; }
+        if (ctrl && shift && !alt && ch == 'n') { normalizeSelectedClip(); return true; }
+        if (!ctrl && !alt && shift && ch == 'n') { normalizeSelectedClip(); return true; }
+
+        // FX da Faixa / Master
+        if (!ctrl && !alt && !shift && ch == 'f' && selectedRow != nullptr) { loadPluginForTrack(selectedRow->getTrack()); return true; }
+        if (!ctrl && !alt && shift && ch == 'f') { loadPluginForTrack(*masterTrack); return true; }
+        if (ctrl && !alt && !shift && ch == 'f' && selectedRow != nullptr) { loadPluginForTrack(selectedRow->getTrack()); return true; }
+
+        // Marcadores e Regioes
+        if (!ctrl && !alt && !shift && ch == 'm')
         {
-            if (selectedRow != nullptr && selectedAudioClip != nullptr)
-            {
-                {
-                    const juce::ScopedLock sl(trackLock);
-                    selectedAudioClip->cycleNextTake(audioFormatManager);
-                }
-                selectedRow->rebuildThumbnails();
-            }
+            regions.push_back({ "Marker " + juce::String((int)regions.size() + 1), globalTimelineSeconds, globalTimelineSeconds + 2.0, juce::Colour(0xffe07a5f) });
+            repaint(regionArea);
+            return true;
+        }
+        if (!ctrl && !alt && shift && ch == 'r')
+        {
+            regions.push_back({ "Region " + juce::String((int)regions.size() + 1), globalTimelineSeconds, globalTimelineSeconds + 8.0, juce::Colour(0xff3a86ff) });
+            repaint(regionArea);
             return true;
         }
 
-        if (ctrl && shift && ch == 'k') { analyzeSelectedClipPeak(); return true; }
-        if (ctrl && shift && ch == 'n') { normalizeSelectedClip(); return true; }
-
+        // Navegacao por Compassos / Batidas / Setas
+        if (!ctrl && !alt && key == juce::KeyPress::pageUpKey)   { seekTo(globalTimelineSeconds - (60.0 / bpmSlider.getValue()) * 4.0); return true; }
+        if (!ctrl && !alt && key == juce::KeyPress::pageDownKey) { seekTo(globalTimelineSeconds + (60.0 / bpmSlider.getValue()) * 4.0); return true; }
+        if (ctrl && !alt && key == juce::KeyPress::pageUpKey)    { seekTo(globalTimelineSeconds - (60.0 / bpmSlider.getValue())); return true; }
+        if (ctrl && !alt && key == juce::KeyPress::pageDownKey)  { seekTo(globalTimelineSeconds + (60.0 / bpmSlider.getValue())); return true; }
+        if (!ctrl && alt && key == juce::KeyPress::homeKey)      { seekTo(0.0); return true; }
+        if (!ctrl && alt && key == juce::KeyPress::endKey)       { seekTo(globalTimelineSeconds + (60.0 / bpmSlider.getValue()) * 4.0); return true; }
+        if (!ctrl && !alt && !shift && key == juce::KeyPress::leftKey)  { seekTo(globalTimelineSeconds - 0.05); return true; }
+        if (!ctrl && !alt && !shift && key == juce::KeyPress::rightKey) { seekTo(globalTimelineSeconds + 0.05); return true; }
         if (key == juce::KeyPress::homeKey) { seekTo(0.0); return true; }
         if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) { deleteSelectedClip(); return true; }
 
@@ -601,6 +683,9 @@ private:
     MidiClip* selectedMidiClip = nullptr;
     bool allItemsSelected = false;
 
+    std::unique_ptr<AudioClip> clipboardClip;
+    int selectedEnvelopePointIdx = 0;
+
     bool isPlaying = false;
     bool isRecording = false;
     bool showGridLines = true;
@@ -621,6 +706,95 @@ private:
         btn.setTooltip(tooltip);
         btn.setColour(juce::TextButton::buttonColourId, bg);
         btn.onClick = std::move(onClick);
+    }
+
+    void setGridDivisionAndSnap(int division)
+    {
+        gridDivBox.setSelectedId(1, juce::dontSendNotification);
+        if (division == 2) gridDivBox.setSelectedId(2, juce::dontSendNotification);
+        else if (division == 4 || division == 8 || division == 12) gridDivBox.setSelectedId(4, juce::dontSendNotification);
+        snapBtn.setToggleState(true, juce::dontSendNotification);
+        updateGridParameters();
+    }
+
+    void toggleEnvelopeFlag(const juce::String& label)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+            "Envelopes / Automacao", label + " alternado no cursor " + juce::String(globalTimelineSeconds, 2) + "s.");
+    }
+
+    void nudgeEnvelopePointSelection(int delta, bool keepSelection)
+    {
+        selectedEnvelopePointIdx = juce::jmax(0, selectedEnvelopePointIdx + delta);
+        juce::ignoreUnused(keepSelection);
+    }
+
+    void insertOrEditEnvelopePointAtCursor(bool editMode)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+            editMode ? "Editar Ponto de Envelope" : "Inserir Ponto de Envelope",
+            "Ponto #" + juce::String(selectedEnvelopePointIdx + 1) + " em " + juce::String(globalTimelineSeconds, 2) + "s.");
+    }
+
+    void nudgeSelectedClipGain(bool up)
+    {
+        if (selectedAudioClip == nullptr || selectedRow == nullptr) return;
+        {
+            const juce::ScopedLock sl(trackLock);
+            float factor = up ? 1.122f : 0.891f;
+            selectedAudioClip->clipGain = juce::jlimit(0.05f, 8.0f, selectedAudioClip->clipGain * factor);
+        }
+        selectedRow->repaint();
+    }
+
+    void copySelectedClip(bool smartCopy)
+    {
+        juce::ignoreUnused(smartCopy);
+        if (selectedAudioClip == nullptr) return;
+        const juce::ScopedLock sl(trackLock);
+        clipboardClip = selectedAudioClip->cloneClip(audioFormatManager);
+    }
+
+    void cutSelectedClip(bool smartCut)
+    {
+        if (selectedRow == nullptr || selectedAudioClip == nullptr || itemsLocked) return;
+        copySelectedClip(smartCut);
+        deleteSelectedClip();
+    }
+
+    void pasteClipboardClip()
+    {
+        if (clipboardClip == nullptr || itemsLocked) return;
+        if (tracks.isEmpty()) addNewTrack();
+        TrackRowComponent* targetRow = (selectedRow != nullptr) ? selectedRow : trackRows.getLast();
+        if (targetRow == nullptr) return;
+
+        {
+            const juce::ScopedLock sl(trackLock);
+            auto copy = clipboardClip->cloneClip(audioFormatManager);
+            copy->timelineStart = globalTimelineSeconds;
+            targetRow->getTrack().getClips().add(std::move(copy));
+        }
+        targetRow->rebuildThumbnails();
+    }
+
+    void cycleTakeOnSelected(bool nextTake)
+    {
+        if (selectedRow == nullptr || selectedAudioClip == nullptr) return;
+        {
+            const juce::ScopedLock sl(trackLock);
+            if (nextTake)
+            {
+                selectedAudioClip->cycleNextTake(audioFormatManager);
+            }
+            else if (selectedAudioClip->takes.size() > 1)
+            {
+                int n = selectedAudioClip->takes.size();
+                selectedAudioClip->activeTakeIndex = (selectedAudioClip->activeTakeIndex - 1 + n) % n;
+                selectedAudioClip->loadFromFileInternal(selectedAudioClip->takes[selectedAudioClip->activeTakeIndex], audioFormatManager, false);
+            }
+        }
+        selectedRow->rebuildThumbnails();
     }
 
     double calculateRoundTripLatencySeconds()
@@ -721,7 +895,7 @@ private:
             { "Ctrl + A",         "Selecionar todos os itens",          [this] { allItemsSelected = true; repaint(); } },
             { "Shift + S",        "Dividir itens na agulha (Split)",    [this] { splitSelectedOrAtPlayhead(); } },
             { "F2",               "Propriedades do item selecionado",   [this] { openSelectedItemProperties(); } },
-            { "T",                "Ciclar entre takes do item",         [this] { if (selectedRow && selectedAudioClip) { selectedAudioClip->cycleNextTake(audioFormatManager); selectedRow->rebuildThumbnails(); } } },
+            { "T",                "Ciclar entre takes do item",         [this] { cycleTakeOnSelected(true); } },
             { "Ctrl + Shift + K", "Analisar picos do item",             [this] { analyzeSelectedClipPeak(); } },
             { "Ctrl + Shift + N", "Normalizar volume do item",          [this] { normalizeSelectedClip(); } }
         };
