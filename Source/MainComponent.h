@@ -1090,31 +1090,7 @@ private:
     void exportProjectDialog()
     {
         stopTransport();
-
-        auto chooser = std::make_shared<juce::FileChooser>("Renderizar Mixagem Final (MP3, WAV ou FLAC)",
-            juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile("Master_Mix.mp3"),
-            "*.mp3;*.wav;*.flac");
-
-        chooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
-            [this, chooser](const juce::FileChooser& fc)
-            {
-                auto file = fc.getResult();
-                if (file != juce::File())
-                {
-                    AudioExporter::ExportFormat fmt = AudioExporter::ExportFormat::WAV;
-                    if (file.hasFileExtension(".mp3"))       fmt = AudioExporter::ExportFormat::MP3;
-                    else if (file.hasFileExtension(".flac")) fmt = AudioExporter::ExportFormat::FLAC;
-
-                    juce::String statusMsg = AudioExporter::bounceProjectToFile(
-                        file, tracks, trackLock, currentSampleRate, currentBlockSize, bpmSlider.getValue(), fmt);
-
-                    bool ok = statusMsg.startsWith("OK");
-                    juce::AlertWindow::showMessageBoxAsync(
-                        ok ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
-                        ok ? "Renderizacao Concluida" : "Aviso na Renderizacao",
-                        statusMsg);
-                }
-            });
+        AudioExporter::showExportDialog(tracks, trackLock, currentSampleRate, currentBlockSize, bpmSlider.getValue());
     }
 
     void importAudioForTrack(AudioTrack& track, TrackRowComponent& row)
