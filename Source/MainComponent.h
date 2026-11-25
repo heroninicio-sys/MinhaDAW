@@ -1,5 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
+#include "StudioLookAndFeel.h"
 #include "Metronome.h"
 #include "PluginScanner.h"
 #include "AudioTrack.h"
@@ -17,6 +18,7 @@ class MainComponent : public juce::AudioAppComponent,
 public:
     MainComponent()
     {
+        setLookAndFeel(&proLookAndFeel);
         audioFormatManager.registerBasicFormats();
 
         masterTrack = std::make_unique<AudioTrack>("MASTER", audioFormatManager, backgroundThread);
@@ -24,12 +26,12 @@ public:
         addAndMakeVisible(timecodeLabel);
         timecodeLabel.setText("1.1.00 / 0:00.000", juce::dontSendNotification);
         timecodeLabel.setFont(juce::FontOptions(17.0f, juce::Font::bold));
-        timecodeLabel.setColour(juce::Label::textColourId, juce::Colours::white);
+        timecodeLabel.setColour(juce::Label::textColourId, juce::Colour(0xff00f5d4));
         timecodeLabel.setJustificationType(juce::Justification::centredLeft);
 
         addAndMakeVisible(statusStateLabel);
         statusStateLabel.setText("[Stopped]", juce::dontSendNotification);
-        statusStateLabel.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+        statusStateLabel.setFont(juce::FontOptions(11.5f, juce::Font::bold));
         statusStateLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
 
         setupButton(rewindBtn, "|<",   "Inicio [Home]",        [this] { seekTo(0.0); });
@@ -37,11 +39,11 @@ public:
         setupButton(stopBtn,   "STOP", "Stop [Espaco]",        [this] { stopTransport(); });
         setupButton(recBtn,    "REC",  "Gravar [R]",           [this] { startRecording(); }, juce::Colour(0xffc1121f));
 
-        setupButton(clickBtn,  "CLIQUE", "Metronomo",          [this] { metronome.enabled = clickBtn.getToggleState(); });
+        setupButton(clickBtn,  "CLICK", "Metronomo",           [this] { metronome.enabled = clickBtn.getToggleState(); });
         clickBtn.setClickingTogglesState(true);
         clickBtn.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffe07a5f));
 
-        setupButton(snapBtn,   "SNAP",   "Grade Magnetica [Alt+S]", [this] { updateGridParameters(); });
+        setupButton(snapBtn,   "SNAP",  "Grade Magnetica [Alt+S]", [this] { updateGridParameters(); });
         snapBtn.setClickingTogglesState(true);
         snapBtn.setToggleState(true, juce::dontSendNotification);
         snapBtn.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff0077b6));
@@ -55,7 +57,7 @@ public:
 
         setupButton(masterFxBtn, "MASTER FX", "Efeitos no Canal Master", [this] { loadPluginForTrack(*masterTrack); }, juce::Colour(0xff5e548e));
         setupButton(actionsBtn,  "Acoes [?]", "Action List [?]",         [this] { openActionListWindow(); });
-        setupButton(mixerToggleBtn, "Mixer [Ctrl+M]", "Mostrar/Ocultar Mixer", [this]
+        setupButton(mixerToggleBtn, "Mixer", "Mostrar/Ocultar Mixer [Ctrl+M]", [this]
         {
             showBottomMixer = !showBottomMixer;
             bottomMixer.setVisible(showBottomMixer);
@@ -64,6 +66,31 @@ public:
         mixerToggleBtn.setClickingTogglesState(true);
         mixerToggleBtn.setToggleState(true, juce::dontSendNotification);
         mixerToggleBtn.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2b9348));
+
+        setupButton(out2ToggleBtn, "OUT 3/4", "Ativa/Desativa 2a Via de Monitoramento Simultaneo", [this]
+        {
+            out2EnabledAtomic.store(out2ToggleBtn.getToggleState());
+        });
+        out2ToggleBtn.setClickingTogglesState(true);
+        out2ToggleBtn.setToggleState(true, juce::dontSendNotification);
+        out2ToggleBtn.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff0096c7));
+
+        addAndMakeVisible(out2VolSlider);
+        out2VolSlider.setRange(0.0, 1.5, 0.01);
+        out2VolSlider.setValue(1.0, juce::dontSendNotification);
+        out2VolSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+        out2VolSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        out2VolSlider.onValueChange = [this]
+        {
+            float v = (float)out2VolSlider.getValue();
+            out2GainAtomic.store(v);
+            out2PctLabel.setText("V2:" + juce::String((int)std::round(v * 100.0f)) + "%", juce::dontSendNotification);
+        };
+
+        addAndMakeVisible(out2PctLabel);
+        out2PctLabel.setText("V2:100%", juce::dontSendNotification);
+        out2PctLabel.setFont(juce::FontOptions(11.0f, juce::Font::bold));
+        out2PctLabel.setColour(juce::Label::textColourId, juce::Colour(0xff00f5d4));
 
         addAndMakeVisible(bpmLabel);
         bpmLabel.setText("BPM", juce::dontSendNotification);
@@ -76,11 +103,11 @@ public:
         bpmSlider.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 44, 24);
         bpmSlider.onValueChange = [this] { updateGridParameters(); };
 
-        setupButton(addTrackBtn,      "+ Faixa",  "Nova Faixa [Ctrl+T]",          [this] { addNewTrack(); }, juce::Colour(0xff3a506b));
-        setupButton(saveProjBtn,      "Salvar",   "Salvar Projeto [Ctrl+S]",      [this] { saveProjectDialog(); });
-        setupButton(openProjBtn,      "Abrir",    "Abrir Projeto [Ctrl+O]",       [this] { openProjectDialog(); });
-        setupButton(bounceBtn,        "Render",   "Renderizar [Ctrl+Alt+R]",      [this] { exportProjectDialog(); }, juce::Colour(0xff2d6a4f));
-        setupButton(audioSettingsBtn, "Prefs",    "Preferencias [Ctrl+P]",        [this] { showAudioSettings(); });
+        setupButton(addTrackBtn,      "+ Faixa", "Nova Faixa [Ctrl+T]",     [this] { addNewTrack(); }, juce::Colour(0xff3a506b));
+        setupButton(saveProjBtn,      "Salvar",  "Salvar Projeto [Ctrl+S]", [this] { saveProjectDialog(); });
+        setupButton(openProjBtn,      "Abrir",   "Abrir Projeto [Ctrl+O]",  [this] { openProjectDialog(); });
+        setupButton(bounceBtn,        "Render",  "Renderizar [Ctrl+Alt+R]", [this] { exportProjectDialog(); }, juce::Colour(0xff2d6a4f));
+        setupButton(audioSettingsBtn, "Prefs",   "Preferencias [Ctrl+P]",   [this] { showAudioSettings(); });
 
         addAndMakeVisible(tracksViewport);
         tracksViewport.setViewedComponent(&tracksContainer, false);
@@ -117,13 +144,7 @@ public:
 
         juce::MessageManager::callAsync([this]
         {
-            juce::AudioDeviceManager::AudioDeviceSetup setup;
-            deviceManager.initialise(2, 2, nullptr, true);
-            deviceManager.getAudioDeviceSetup(setup);
-            setup.bufferSize = 1024;
-            setup.sampleRate = 44100.0;
-            deviceManager.setAudioDeviceSetup(setup, true);
-
+            setAudioChannels(2, 4);
             rebuildMixerDock();
 
             if (!welcomeOverlay->isVisible())
@@ -140,6 +161,7 @@ public:
         stopTransport();
         bottomMixer.clearStrips();
         shutdownAudio();
+        setLookAndFeel(nullptr);
     }
 
     bool keyPressed(const juce::KeyPress& key) override
@@ -295,22 +317,23 @@ public:
 
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override
     {
-        currentSampleRate = sampleRate;
-        currentBlockSize = samplesPerBlockExpected;
-        metronome.prepare(sampleRate);
+        currentSampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
+        currentBlockSize = samplesPerBlockExpected > 0 ? samplesPerBlockExpected : 128;
+        metronome.prepare(currentSampleRate);
         backgroundThread.startThread();
 
         const juce::ScopedLock sl(trackLock);
         if (masterTrack != nullptr)
-            masterTrack->prepareToPlay(samplesPerBlockExpected, sampleRate);
+            masterTrack->prepareToPlay(currentBlockSize, currentSampleRate);
 
         for (auto* track : tracks)
-            track->prepareToPlay(samplesPerBlockExpected, sampleRate);
+            track->prepareToPlay(currentBlockSize, currentSampleRate);
     }
 
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override
     {
-        int numInputs = bufferToFill.buffer->getNumChannels();
+        int totalCh = bufferToFill.buffer->getNumChannels();
+        int numInputs = juce::jmin(2, totalCh);
         juce::AudioBuffer<float> inputCopy(numInputs, bufferToFill.numSamples);
         for (int ch = 0; ch < numInputs; ++ch)
             inputCopy.copyFrom(ch, 0, *bufferToFill.buffer, ch, bufferToFill.startSample, bufferToFill.numSamples);
@@ -338,20 +361,39 @@ public:
 
         metronome.process(*bufferToFill.buffer, globalTimelineSeconds, currentBpm, isPlaying);
 
-        if (masterTrack != nullptr)
+        if (masterTrack != nullptr && totalCh >= 2)
         {
+            juce::AudioBuffer<float> masterStereoView(bufferToFill.buffer->getArrayOfWritePointers(), 2, bufferToFill.startSample, bufferToFill.numSamples);
             juce::MidiBuffer emptyMidi;
             for (auto* vst : masterTrack->getVstPlugins())
-                vst->processBlock(*bufferToFill.buffer, emptyMidi);
+                vst->processBlock(masterStereoView, emptyMidi);
             for (auto* fx : masterTrack->getNativeEffects())
-                fx->process(*bufferToFill.buffer);
+                fx->process(masterStereoView);
         }
 
-        float mGain = masterGainAtomic.load();
-        bufferToFill.buffer->applyGain(bufferToFill.startSample, bufferToFill.numSamples, mGain);
+        float mGain1 = masterGainAtomic.load();
+        if (totalCh >= 1) bufferToFill.buffer->applyGain(0, bufferToFill.startSample, bufferToFill.numSamples, mGain1);
+        if (totalCh >= 2) bufferToFill.buffer->applyGain(1, bufferToFill.startSample, bufferToFill.numSamples, mGain1);
+
+        if (totalCh >= 4)
+        {
+            if (out2EnabledAtomic.load())
+            {
+                float gainRatio2 = (mGain1 > 0.0001f) ? (out2GainAtomic.load() / mGain1) : 0.0f;
+                bufferToFill.buffer->copyFrom(2, bufferToFill.startSample, *bufferToFill.buffer, 0, bufferToFill.startSample, bufferToFill.numSamples);
+                bufferToFill.buffer->copyFrom(3, bufferToFill.startSample, *bufferToFill.buffer, 1, bufferToFill.startSample, bufferToFill.numSamples);
+                bufferToFill.buffer->applyGain(2, bufferToFill.startSample, bufferToFill.numSamples, gainRatio2);
+                bufferToFill.buffer->applyGain(3, bufferToFill.startSample, bufferToFill.numSamples, gainRatio2);
+            }
+            else
+            {
+                bufferToFill.buffer->clear(2, bufferToFill.startSample, bufferToFill.numSamples);
+                bufferToFill.buffer->clear(3, bufferToFill.startSample, bufferToFill.numSamples);
+            }
+        }
 
         float mPeak = 0.0f;
-        for (int ch = 0; ch < bufferToFill.buffer->getNumChannels(); ++ch)
+        for (int ch = 0; ch < juce::jmin(2, totalCh); ++ch)
             mPeak = juce::jmax(mPeak, bufferToFill.buffer->getMagnitude(ch, bufferToFill.startSample, bufferToFill.numSamples));
 
         float prevMaster = masterPeakAtomic.load();
@@ -372,22 +414,24 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        g.fillAll(juce::Colour(0xff1b1b20));
+        g.fillAll(juce::Colour(0xff121318));
 
-        g.setColour(juce::Colour(0xff25252c));
+        juce::ColourGradient topGrad(juce::Colour(0xff232631), 0.0f, 0.0f,
+                                     juce::Colour(0xff171920), 0.0f, 48.0f, false);
+        g.setGradientFill(topGrad);
         g.fillRect(0, 0, getWidth(), 48);
 
-        g.setColour(juce::Colour(0xff141418));
-        g.fillRoundedRectangle(8.0f, 6.0f, 256.0f, 36.0f, 4.0f);
-        g.setColour(juce::Colour(0xff383844));
-        g.drawRoundedRectangle(8.0f, 6.0f, 256.0f, 36.0f, 4.0f, 1.0f);
+        g.setColour(juce::Colour(0xff0d0e12));
+        g.fillRoundedRectangle(8.0f, 6.0f, 256.0f, 36.0f, 5.0f);
+        g.setColour(juce::Colour(0xff323646));
+        g.drawRoundedRectangle(8.0f, 6.0f, 256.0f, 36.0f, 5.0f, 1.0f);
 
         int timelineStartX = regionArea.getX() + 264;
         if (!regionArea.isEmpty())
         {
-            g.setColour(juce::Colour(0xff1a1a20));
+            g.setColour(juce::Colour(0xff181a22));
             g.fillRect(regionArea);
-            g.setColour(juce::Colour(0xff2e2e38));
+            g.setColour(juce::Colour(0xff2c303e));
             g.drawRect(regionArea, 1);
 
             juce::String flagsText = "Grade:" + juce::String(showGridLines ? "ON" : "OFF") +
@@ -414,9 +458,9 @@ public:
 
         if (!rulerArea.isEmpty())
         {
-            g.setColour(juce::Colour(0xff202027));
+            g.setColour(juce::Colour(0xff1d2029));
             g.fillRect(rulerArea);
-            g.setColour(juce::Colour(0xff343440));
+            g.setColour(juce::Colour(0xff323646));
             g.drawRect(rulerArea, 1);
 
             double bpm = bpmSlider.getValue();
@@ -450,7 +494,7 @@ public:
         {
             g.setColour(juce::Colours::grey);
             g.setFont(15.0f);
-            g.drawText("Projeto Limpo - Clique em '+ Faixa' ou pressione Ctrl+T para adicionar uma faixa",
+            g.drawText("Projeto Limpo - Clique em '+ Faixa' (Ctrl+T), arme o botao 'R' e pressione REC",
                        tracksViewport.getBounds(), juce::Justification::centred);
         }
     }
@@ -468,32 +512,37 @@ public:
 
         auto topBar = area.removeFromTop(48);
 
-        timecodeLabel.setBounds(16, 8, 175, 32);
-        statusStateLabel.setBounds(192, 12, 68, 24);
+        timecodeLabel.setBounds(14, 8, 174, 32);
+        statusStateLabel.setBounds(188, 12, 72, 24);
 
         auto controls = topBar.withTrimmedLeft(272).reduced(4, 9);
 
-        rewindBtn.setBounds(controls.removeFromLeft(34).reduced(1));
-        playBtn.setBounds(controls.removeFromLeft(50).reduced(1));
-        stopBtn.setBounds(controls.removeFromLeft(50).reduced(1));
-        recBtn.setBounds(controls.removeFromLeft(46).reduced(1));
+        rewindBtn.setBounds(controls.removeFromLeft(30).reduced(1));
+        playBtn.setBounds(controls.removeFromLeft(46).reduced(1));
+        stopBtn.setBounds(controls.removeFromLeft(46).reduced(1));
+        recBtn.setBounds(controls.removeFromLeft(42).reduced(1));
 
-        controls.removeFromLeft(6);
-        clickBtn.setBounds(controls.removeFromLeft(54).reduced(1));
-        snapBtn.setBounds(controls.removeFromLeft(48).reduced(1));
-        gridDivBox.setBounds(controls.removeFromLeft(54).reduced(1));
-        masterFxBtn.setBounds(controls.removeFromLeft(78).reduced(1));
-        actionsBtn.setBounds(controls.removeFromLeft(68).reduced(1));
-        mixerToggleBtn.setBounds(controls.removeFromLeft(88).reduced(1));
+        controls.removeFromLeft(4);
+        clickBtn.setBounds(controls.removeFromLeft(50).reduced(1));
+        snapBtn.setBounds(controls.removeFromLeft(46).reduced(1));
+        gridDivBox.setBounds(controls.removeFromLeft(52).reduced(1));
+        masterFxBtn.setBounds(controls.removeFromLeft(74).reduced(1));
+        actionsBtn.setBounds(controls.removeFromLeft(64).reduced(1));
+        mixerToggleBtn.setBounds(controls.removeFromLeft(52).reduced(1));
 
-        audioSettingsBtn.setBounds(controls.removeFromRight(48).reduced(1));
-        bounceBtn.setBounds(controls.removeFromRight(58).reduced(1));
-        openProjBtn.setBounds(controls.removeFromRight(48).reduced(1));
-        saveProjBtn.setBounds(controls.removeFromRight(50).reduced(1));
-        addTrackBtn.setBounds(controls.removeFromRight(66).reduced(1));
+        controls.removeFromLeft(4);
+        out2ToggleBtn.setBounds(controls.removeFromLeft(64).reduced(1));
+        out2VolSlider.setBounds(controls.removeFromLeft(54).reduced(1));
+        out2PctLabel.setBounds(controls.removeFromLeft(48));
+
+        audioSettingsBtn.setBounds(controls.removeFromRight(46).reduced(1));
+        bounceBtn.setBounds(controls.removeFromRight(56).reduced(1));
+        openProjBtn.setBounds(controls.removeFromRight(46).reduced(1));
+        saveProjBtn.setBounds(controls.removeFromRight(48).reduced(1));
+        addTrackBtn.setBounds(controls.removeFromRight(62).reduced(1));
         controls.removeFromRight(4);
-        bpmSlider.setBounds(controls.removeFromRight(80).reduced(1));
-        bpmLabel.setBounds(controls.removeFromRight(30));
+        bpmSlider.setBounds(controls.removeFromRight(76).reduced(1));
+        bpmLabel.setBounds(controls.removeFromRight(28));
 
         regionArea = area.removeFromTop(22).reduced(8, 0);
         rulerArea  = area.removeFromTop(22).reduced(8, 0);
@@ -506,10 +555,12 @@ public:
     }
 
 private:
-    juce::Label timecodeLabel, statusStateLabel, bpmLabel;
-    juce::TextButton rewindBtn, playBtn, stopBtn, recBtn, clickBtn, snapBtn, masterFxBtn, actionsBtn, mixerToggleBtn;
+    ProStudioLookAndFeel proLookAndFeel;
+
+    juce::Label timecodeLabel, statusStateLabel, bpmLabel, out2PctLabel;
+    juce::TextButton rewindBtn, playBtn, stopBtn, recBtn, clickBtn, snapBtn, masterFxBtn, actionsBtn, mixerToggleBtn, out2ToggleBtn;
     juce::TextButton addTrackBtn, saveProjBtn, openProjBtn, bounceBtn, audioSettingsBtn;
-    juce::Slider bpmSlider;
+    juce::Slider bpmSlider, out2VolSlider;
     juce::ComboBox gridDivBox;
 
     juce::Rectangle<int> regionArea, rulerArea;
@@ -521,6 +572,8 @@ private:
 
     std::atomic<float> masterGainAtomic { 1.0f };
     std::atomic<float> masterPeakAtomic { 0.0f };
+    std::atomic<float> out2GainAtomic { 1.0f };
+    std::atomic<bool> out2EnabledAtomic { true };
     std::unique_ptr<AudioTrack> masterTrack;
     BottomMixerDock bottomMixer { masterGainAtomic, masterPeakAtomic };
 
@@ -554,17 +607,31 @@ private:
     std::atomic<double> currentBpmAtomic { 120.0 };
     double pixelsPerSecond = 55.0;
     int trackRowHeight = 64;
-    double currentSampleRate = 44100.0;
-    int currentBlockSize = 1024;
+    double currentSampleRate = 48000.0;
+    int currentBlockSize = 128;
 
     void setupButton(juce::TextButton& btn, const juce::String& text, const juce::String& tooltip,
-                     std::function<void()> onClick, juce::Colour bg = juce::Colour(0xff32323c))
+                     std::function<void()> onClick, juce::Colour bg = juce::Colour(0xff2c303e))
     {
         addAndMakeVisible(btn);
         btn.setButtonText(text);
         btn.setTooltip(tooltip);
         btn.setColour(juce::TextButton::buttonColourId, bg);
         btn.onClick = std::move(onClick);
+    }
+
+    double calculateRoundTripLatencySeconds()
+    {
+        if (auto* dev = deviceManager.getCurrentAudioDevice())
+        {
+            double sr = dev->getCurrentSampleRate();
+            if (sr > 0.0)
+            {
+                int totalLatencySamples = dev->getInputLatencyInSamples() + dev->getOutputLatencyInSamples();
+                return (double)totalLatencySamples / sr;
+            }
+        }
+        return 0.0;
     }
 
     void createNewCleanProject()
@@ -779,17 +846,38 @@ private:
 
     void startRecording()
     {
+        if (tracks.isEmpty())
+            addNewTrack();
+
+        bool anyArmed = false;
+        for (auto* t : tracks)
+            if (t->isArmed) { anyArmed = true; break; }
+
+        if (!anyArmed)
+        {
+            if (selectedRow != nullptr)
+                selectedRow->getTrack().isArmed = true;
+            else
+                tracks[0]->isArmed = true;
+
+            for (auto* r : trackRows)
+                r->syncButtonsFromTrack();
+        }
+
+        double rtlSec = calculateRoundTripLatencySeconds();
         const juce::ScopedLock sl(trackLock);
-        auto desktop = juce::File::getSpecialLocation(juce::File::userDesktopDirectory);
+        auto recDir = juce::File::getSpecialLocation(juce::File::userMusicDirectory).getChildFile("MinhaDAW_Gravacoes");
+        recDir.createDirectory();
 
         for (auto* track : tracks)
         {
             if (track->isArmed)
             {
-                auto file = desktop.getNonexistentChildFile(track->getName() + "_Take", ".wav");
-                track->startRecording(file, globalTimelineSeconds);
+                auto file = recDir.getNonexistentChildFile(track->getName() + "_Take", ".wav");
+                track->startRecording(file, globalTimelineSeconds, rtlSec);
             }
         }
+
         metronome.reset();
         isRecording = true;
         isPlaying = true;
