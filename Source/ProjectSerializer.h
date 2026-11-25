@@ -25,7 +25,6 @@ public:
         rootObj->setProperty("version", "1.2");
         rootObj->setProperty("bpm", bpm);
 
-        // Salva as Regiões / Seções da sessão
         juce::Array<juce::var> regionsArr;
         for (const auto& reg : regions)
         {
@@ -61,6 +60,7 @@ public:
                 cObj->setProperty("duration", c->duration);
                 cObj->setProperty("fadeIn", c->fadeInDuration);
                 cObj->setProperty("fadeOut", c->fadeOutDuration);
+                cObj->setProperty("clipGain", c->clipGain);
                 audioClipsArr.add(juce::var(cObj));
             }
             tObj->setProperty("audioClips", audioClipsArr);
@@ -189,6 +189,7 @@ public:
                             clip->duration          = (double)cObj->getProperty("duration");
                             clip->fadeInDuration    = (double)cObj->getProperty("fadeIn");
                             clip->fadeOutDuration   = (double)cObj->getProperty("fadeOut");
+                            clip->clipGain          = cObj->hasProperty("clipGain") ? (float)cObj->getProperty("clipGain") : 1.0f;
                             track->getClips().add(std::move(clip));
                         }
                     }
