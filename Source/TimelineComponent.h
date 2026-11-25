@@ -17,7 +17,8 @@ public:
         TrimLeft,
         TrimRight,
         FadeIn,
-        FadeOut
+        FadeOut,
+        ReorderTrack
     };
 
     TrackRowComponent(AudioTrack& trackRef,
@@ -30,7 +31,9 @@ public:
                       std::function<void(AudioTrack&, MidiClip&)> onOpenPianoRollCallback,
                       std::function<void(double)> onSeekCallback,
                       std::function<void(TrackRowComponent*, AudioClip*, MidiClip*)> onSelectCallback,
-                      std::function<void(int)> onDeleteTrackCallback)
+                      std::function<void(int)> onDeleteTrackCallback,
+                      std::function<void(int, int)> onMoveTrackCallback,
+                      std::function<void(int, TrackRowComponent&)> onOpenTrackMenuCallback)
         : track(trackRef),
           index(trackIndex),
           formatManager(formatMgr),
@@ -41,7 +44,9 @@ public:
           openPianoRollCallback(std::move(onOpenPianoRollCallback)),
           seekCallback(std::move(onSeekCallback)),
           selectCallback(std::move(onSelectCallback)),
-          deleteTrackCallback(std::move(onDeleteTrackCallback))
+          deleteTrackCallback(std::move(onDeleteTrackCallback)),
+          moveTrackCallback(std::move(onMoveTrackCallback)),
+          openTrackMenuCallback(std::move(onOpenTrackMenuCallback))
     {
         const juce::Colour palette[] = {
             juce::Colour(0xff2ec4b6), juce::Colour(0xff3a86ff), juce::Colour(0xff38b000),
@@ -240,7 +245,12 @@ public:
 
     void mouseMove(const juce::MouseEvent& e) override
     {
-        if (e.x < headerWidth || itemsLocked)
+        if (e.x < headerWidth)
+        {
+            setMouseCursor(juce::MouseCursor::PointingHandCursor);
+            return;
+        }
+        if (itemsLocked)
         {
             setMouseCursor(juce::MouseCursor::NormalCursor);
             return;
@@ -287,6 +297,14 @@ public:
         if (e.x < headerWidth)
         {
             notifySelected(nullptr, nullptr);
+            mouseDownScreenPos = e.getScreenPosition();
+            draggingTrackRow = false;
+
+            // Clique esquerdo abre o menu de opções da track (e arrastar move a track entre outras tracks)
+            if (e.mods.isLeftButtonDown() && openTrackMenuCallback)
+            {
+                pendingMenuOpen = true;
+            }
             return;
         }
 
@@ -337,6 +355,18 @@ public:
 
     void mouseDrag(const juce::MouseEvent& e) override
     {
+        if (e.x < headerWidth && e.mods.isLeftButtonDown())
+        {
+            int dy = e.getScreenPosition().y - mouseDownScreenPos.y;
+            if (std::abs(dy) > 6)
+            {
+                draggingTrackRow = true;
+                pendingMenuOpen = false;
+                setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+            }
+            return;
+        }
+
         if (currentDragMode == DragMode::None || itemsLocked) return;
 
         double deltaSeconds = (double)(e.x - dragStartX) / pixelsPerSecond;
@@ -388,8 +418,28 @@ public:
         repaint();
     }
 
-    void mouseUp(const juce::MouseEvent&) override
+    void mouseUp(const juce::MouseEvent& e) override
     {
+        if (draggingTrackRow)
+        {
+            draggingTrackRow = false;
+            pendingMenuOpen = false;
+            int dy = e.getScreenPosition().y - mouseDownScreenPos.y;
+            int rowH = juce::jmax(24, getHeight());
+            int deltaRows = (int)std::round((double)dy / (double)rowH);
+            if (deltaRows != 0 && moveTrackCallback)
+                moveTrackCallback(index, index + deltaRows);
+            return;
+        }
+
+        if (pendingMenuOpen && e.x < headerWidth)
+        {
+            pendingMenuOpen = false;
+            if (openTrackMenuCallback)
+                openTrackMenuCallback(index, *this);
+            return;
+        }
+
         activeAudioClip = nullptr;
         activeMidiClip = nullptr;
         currentDragMode = DragMode::None;
@@ -398,10 +448,17 @@ public:
     void paint(juce::Graphics& g) override
     {
         auto bounds = getLocalBounds();
-        
+        int indentPx = track.folderDepth > 0 ? 12 : 0;
+
         auto controlArea = bounds.removeFromLeft(headerWidth);
         g.setColour(isTrackSelected ? juce::Colour(0xff2c303c) : juce::Colour(0xff21242d));
         g.fillRect(controlArea);
+
+        if (indentPx > 0)
+        {
+            g.setColour(trackAccentColour.withAlpha(0.28f));
+            g.fillRect(controlArea.getX(), controlArea.getY(), indentPx, controlArea.getHeight());
+        }
 
         auto numCol = controlArea.removeFromLeft(24);
         g.setColour(trackAccentColour);
@@ -560,6 +617,27 @@ public:
             }
         }
 
+        // Desenha Envelope de Volume sobre a track quando habilitado
+        if (track.showVolumeEnvelope)
+        {
+            auto pts = track.getVolumeEnvelopeCopy();
+            if (!pts.empty())
+            {
+                g.setColour(juce::Colour(0xffffbe0b));
+                juce::Path envPath;
+                for (size_t i = 0; i < pts.size(); ++i)
+                {
+                    float px = (float)headerWidth + (float)(pts[i].timeSec * pixelsPerSecond);
+                    float norm = juce::jlimit(0.0f, 1.0f, pts[i].value / 1.5f);
+                    float py = (float)bounds.getBottom() - 4.0f - norm * ((float)bounds.getHeight() - 8.0f);
+                    if (i == 0) envPath.startNewSubPath(px, py);
+                    else envPath.lineTo(px, py);
+                    g.fillEllipse(px - 3.5f, py - 3.5f, 7.0f, 7.0f);
+                }
+                g.strokePath(envPath, juce::PathStrokeType(1.6f));
+            }
+        }
+
         for (auto* mc : track.getMidiClips())
         {
             auto mcRect = getMidiClipBounds(*mc);
@@ -600,7 +678,7 @@ public:
     void resized() override
     {
         auto controlArea = getLocalBounds().removeFromLeft(headerWidth).withTrimmedLeft(26).withTrimmedRight(12).reduced(4, 4);
-        
+
         auto topRow = controlArea.removeFromTop(22);
         armBtn.setBounds(topRow.removeFromLeft(22).reduced(1));
         monBtn.setBounds(topRow.removeFromLeft(34).reduced(1));
@@ -695,6 +773,10 @@ private:
     AudioClip* selectedAudioClip = nullptr;
     MidiClip* selectedMidiClip = nullptr;
 
+    juce::Point<int> mouseDownScreenPos;
+    bool draggingTrackRow = false;
+    bool pendingMenuOpen = false;
+
     AudioClip* activeAudioClip = nullptr;
     MidiClip* activeMidiClip = nullptr;
     DragMode currentDragMode = DragMode::None;
@@ -716,4 +798,6 @@ private:
     std::function<void(double)> seekCallback;
     std::function<void(TrackRowComponent*, AudioClip*, MidiClip*)> selectCallback;
     std::function<void(int)> deleteTrackCallback;
+    std::function<void(int, int)> moveTrackCallback;
+    std::function<void(int, TrackRowComponent&)> openTrackMenuCallback;
 };
