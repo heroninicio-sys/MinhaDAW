@@ -9,6 +9,7 @@
 #include "TrackRackWindow.h"
 #include "AudioExporter.h"
 #include "ProjectSerializer.h"
+#include "WelcomeAndActions.h"
 
 class MainComponent : public juce::AudioAppComponent,
                       private juce::Timer
@@ -17,6 +18,8 @@ public:
     MainComponent()
     {
         audioFormatManager.registerBasicFormats();
+
+        masterTrack = std::make_unique<AudioTrack>("MASTER", audioFormatManager, backgroundThread);
 
         addAndMakeVisible(timecodeLabel);
         timecodeLabel.setText("1.1.00 / 0:00.000", juce::dontSendNotification);
@@ -29,12 +32,12 @@ public:
         statusStateLabel.setFont(juce::FontOptions(12.0f, juce::Font::bold));
         statusStateLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
 
-        setupButton(rewindBtn, "|<",   "Inicio [W / Home]",    [this] { seekTo(0.0); });
-        setupButton(playBtn,   "PLAY", "Play [Espaco]",        [this] { startPlayback(); }, juce::Colour(0xff2b9348));
+        setupButton(rewindBtn, "|<",   "Inicio [Home]",        [this] { seekTo(0.0); });
+        setupButton(playBtn,   "PLAY", "Play / Stop [Espaco]", [this] { startPlayback(); }, juce::Colour(0xff2b9348));
         setupButton(stopBtn,   "STOP", "Stop [Espaco]",        [this] { stopTransport(); });
-        setupButton(recBtn,    "REC",  "Gravar [Ctrl+R]",      [this] { startRecording(); }, juce::Colour(0xffc1121f));
+        setupButton(recBtn,    "REC",  "Gravar [R]",           [this] { startRecording(); }, juce::Colour(0xffc1121f));
 
-        setupButton(clickBtn,  "CLIQUE", "Metronomo [C]",      [this] { metronome.enabled = clickBtn.getToggleState(); });
+        setupButton(clickBtn,  "CLIQUE", "Metronomo",          [this] { metronome.enabled = clickBtn.getToggleState(); });
         clickBtn.setClickingTogglesState(true);
         clickBtn.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffe07a5f));
 
@@ -50,8 +53,9 @@ public:
         gridDivBox.setSelectedId(1, juce::dontSendNotification);
         gridDivBox.onChange = [this] { updateGridParameters(); };
 
-        setupButton(splitBtn,  "Split [S]", "Cortar Clipe na Agulha [S]", [this] { splitSelectedOrAtPlayhead(); }, juce::Colour(0xff4a4e69));
-        setupButton(mixerToggleBtn, "Mixer [Ctrl+M]", "Mostrar/Ocultar Mixer Inferior", [this]
+        setupButton(masterFxBtn, "MASTER FX", "Efeitos no Canal Master", [this] { loadPluginForTrack(*masterTrack); }, juce::Colour(0xff5e548e));
+        setupButton(actionsBtn,  "Acoes [?]", "Action List [?]",         [this] { openActionListWindow(); });
+        setupButton(mixerToggleBtn, "Mixer [Ctrl+M]", "Mostrar/Ocultar Mixer", [this]
         {
             showBottomMixer = !showBottomMixer;
             bottomMixer.setVisible(showBottomMixer);
@@ -72,42 +76,45 @@ public:
         bpmSlider.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 44, 24);
         bpmSlider.onValueChange = [this] { updateGridParameters(); };
 
-        setupButton(addTrackBtn,      "+ Pista",  "Nova Faixa [Ctrl+T]",  [this] { addNewTrack(); }, juce::Colour(0xff3a506b));
-        setupButton(saveProjBtn,      "Salvar",   "Salvar Sessao [Ctrl+S]", [this] { saveProjectDialog(); });
-        setupButton(openProjBtn,      "Abrir",    "Abrir Sessao [Ctrl+O]",  [this] { openProjectDialog(); });
-        setupButton(bounceBtn,        "Exportar", "Bounce MP3/WAV/FLAC",  [this] { exportProjectDialog(); }, juce::Colour(0xff2d6a4f));
-        setupButton(audioSettingsBtn, "ASIO",     "Audio / ASIO",         [this] { showAudioSettings(); });
+        setupButton(addTrackBtn,      "+ Faixa",  "Nova Faixa [Ctrl+T]",          [this] { addNewTrack(); }, juce::Colour(0xff3a506b));
+        setupButton(saveProjBtn,      "Salvar",   "Salvar Projeto [Ctrl+S]",      [this] { saveProjectDialog(); });
+        setupButton(openProjBtn,      "Abrir",    "Abrir Projeto [Ctrl+O]",       [this] { openProjectDialog(); });
+        setupButton(bounceBtn,        "Render",   "Renderizar [Ctrl+Alt+R]",      [this] { exportProjectDialog(); }, juce::Colour(0xff2d6a4f));
+        setupButton(audioSettingsBtn, "Prefs",    "Preferencias [Ctrl+P]",        [this] { showAudioSettings(); });
 
         addAndMakeVisible(tracksViewport);
         tracksViewport.setViewedComponent(&tracksContainer, false);
-        tracksViewport.setScrollBarsShown(true, false);
+        tracksViewport.setScrollBarsShown(true, true);
 
         addAndMakeVisible(bottomMixer);
 
-        // Sobreposição visual da janela de inicialização de scan
+        welcomeOverlay = std::make_unique<WelcomeOverlayComponent>(
+            [this] { createNewCleanProject(); },
+            [this] { openProjectDialog(); },
+            [this] { showAudioSettings(); }
+        );
+        addChildComponent(*welcomeOverlay);
+        welcomeOverlay->setVisible(WelcomeOverlayComponent::shouldShowOnStartup());
+
         addChildComponent(scanOverlay);
         pluginScanner.attachOverlay(&scanOverlay);
 
-        regions.push_back({ "Intro",    0.0,  8.0,  juce::Colour(0xff2b9348) });
-        regions.push_back({ "Verse 1",  8.0,  24.0, juce::Colour(0xff3a86ff) });
-        regions.push_back({ "Chorus 1", 24.0, 40.0, juce::Colour(0xff8338ec) });
-
         setWantsKeyboardFocus(true);
-
-        for (int i = 0; i < 6; ++i)
-            addNewTrack();
-
-        setAudioChannels(2, 2);
         setSize(1366, 740);
         startTimerHz(30);
 
-        // Inicia o Auto-Scan isolado apenas para novos plugins (o que já foi lido vem direto do cache)
-        pluginScanner.startBackgroundAutoScan(false);
+        juce::MessageManager::callAsync([this]
+        {
+            setAudioChannels(2, 2);
+            rebuildMixerDock();
+            pluginScanner.startBackgroundAutoScan(false);
+        });
     }
 
     ~MainComponent() override
     {
         stopTimer();
+        actionListWindow.reset();
         trackRackWindow.reset();
         pianoRollWindow.reset();
         stopTransport();
@@ -117,12 +124,23 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override
     {
-        if (pluginScanner.isScanning())
-            return true;
-
         auto ch = juce::CharacterFunctions::toLowerCase(key.getTextCharacter());
-        bool ctrl = key.getModifiers().isCtrlDown();
-        bool alt  = key.getModifiers().isAltDown();
+        bool ctrl  = key.getModifiers().isCtrlDown();
+        bool alt   = key.getModifiers().isAltDown();
+        bool shift = key.getModifiers().isShiftDown();
+
+        if (key.getTextCharacter() == '?')
+        {
+            openActionListWindow();
+            return true;
+        }
+
+        if (ctrl && !alt && !shift && ch == 'n') { createNewCleanProject(); return true; }
+        if (ctrl && !alt && !shift && ch == 'o') { openProjectDialog(); return true; }
+        if (ctrl && !alt && !shift && ch == 's') { saveProjectDialog(); return true; }
+        if (ctrl && alt && ch == 'r') { exportProjectDialog(); return true; }
+        if (ctrl && !alt && ch == 'p') { showAudioSettings(); return true; }
+        if (ctrl && !alt && ch == 'm') { mixerToggleBtn.triggerClick(); return true; }
 
         if (key == juce::KeyPress::spaceKey)
         {
@@ -130,41 +148,104 @@ public:
             else startPlayback();
             return true;
         }
-        if (ctrl && ch == 'r') { startRecording(); return true; }
-        if (ctrl && ch == 's') { saveProjectDialog(); return true; }
-        if (ctrl && ch == 'o') { openProjectDialog(); return true; }
-        if (ctrl && ch == 't') { addNewTrack(); return true; }
-        if (ctrl && ch == 'd') { duplicateSelectedClip(); return true; }
-        if (ctrl && ch == 'm') { mixerToggleBtn.triggerClick(); return true; }
-        if (alt && ch == 's')  { snapBtn.triggerClick(); return true; }
 
-        if (!ctrl && !alt && ch == 's') { splitSelectedOrAtPlayhead(); return true; }
-        if (!ctrl && !alt && ch == 'c') { clickBtn.triggerClick(); return true; }
-        if (!ctrl && !alt && ch == 'm' && selectedRow != nullptr)
+        if (!ctrl && !alt && !shift && ch == 'r') { startRecording(); return true; }
+        if (!ctrl && alt && ch == 's') { snapBtn.triggerClick(); return true; }
+
+        if (!ctrl && alt && ch == 'g')
         {
-            selectedRow->getTrack().isMuted = !selectedRow->getTrack().isMuted;
-            selectedRow->syncButtonsFromTrack();
-            bottomMixer.refreshMetersAndState();
+            showGridLines = !showGridLines;
+            updateGridParameters();
             return true;
         }
-        if ((!ctrl && !alt && ch == 'w') || key == juce::KeyPress::homeKey) { seekTo(0.0); return true; }
-        if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) { deleteSelectedClip(); return true; }
 
-        if (ch == '+' || ch == '=') { changeHZoom(1.25); return true; }
-        if (ch == '-')               { changeHZoom(0.8);  return true; }
-        if (key == juce::KeyPress::pageUpKey)   { changeVZoom(12);  return true; }
-        if (key == juce::KeyPress::pageDownKey) { changeVZoom(-12); return true; }
+        if (!ctrl && alt && ch == 'x')
+        {
+            autoCrossfadeEnabled = !autoCrossfadeEnabled;
+            return true;
+        }
+
+        if (!ctrl && !alt && !shift && ch == 'l')
+        {
+            itemsLocked = !itemsLocked;
+            updateGridParameters();
+            return true;
+        }
+
+        if (ctrl && !alt && ch == 't') { addNewTrack(); return true; }
+        if (ctrl && !shift && ch == 'z') { undoManager.undo(); return true; }
+        if (ctrl && shift && ch == 'z')  { undoManager.redo(); return true; }
+
+        if (ctrl && !alt && ch == 'a')
+        {
+            allItemsSelected = !allItemsSelected;
+            for (auto* r : trackRows)
+                r->setSelectionState(r == selectedRow, selectedAudioClip, selectedMidiClip, allItemsSelected);
+            return true;
+        }
+
+        if ((!ctrl && !alt && shift && ch == 's') || (!ctrl && !alt && !shift && ch == 's'))
+        {
+            splitSelectedOrAtPlayhead();
+            return true;
+        }
+
+        if (key == juce::KeyPress::F2Key)
+        {
+            openSelectedItemProperties();
+            return true;
+        }
+
+        if (!ctrl && !alt && !shift && ch == 't')
+        {
+            if (selectedRow != nullptr && selectedAudioClip != nullptr)
+            {
+                {
+                    const juce::ScopedLock sl(trackLock);
+                    selectedAudioClip->cycleNextTake(audioFormatManager);
+                }
+                selectedRow->rebuildThumbnails();
+            }
+            return true;
+        }
+
+        if (ctrl && shift && ch == 'k') { analyzeSelectedClipPeak(); return true; }
+        if (ctrl && shift && ch == 'n') { normalizeSelectedClip(); return true; }
+
+        if (key == juce::KeyPress::homeKey) { seekTo(0.0); return true; }
+        if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) { deleteSelectedClip(); return true; }
 
         return false;
     }
 
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
     {
-        if (e.mods.isCtrlDown())
+        bool ctrl = e.mods.isCtrlDown();
+        bool alt  = e.mods.isAltDown();
+
+        if (ctrl && alt)
+        {
+            auto pos = tracksViewport.getViewPosition();
+            tracksViewport.setViewPosition(pos.x, juce::jmax(0, pos.y - (int)(wheel.deltaY * 120.0f)));
+            return;
+        }
+        if (!ctrl && alt)
+        {
+            auto pos = tracksViewport.getViewPosition();
+            tracksViewport.setViewPosition(juce::jmax(0, pos.x - (int)(wheel.deltaY * 150.0f)), pos.y);
+            return;
+        }
+        if (ctrl && !alt)
+        {
+            changeVZoom(wheel.deltaY > 0 ? 12 : -12);
+            return;
+        }
+        if (!ctrl && !alt)
         {
             changeHZoom(wheel.deltaY > 0 ? 1.18 : 0.85);
             return;
         }
+
         Component::mouseWheelMove(e, wheel);
     }
 
@@ -200,6 +281,9 @@ public:
         backgroundThread.startThread();
 
         const juce::ScopedLock sl(trackLock);
+        if (masterTrack != nullptr)
+            masterTrack->prepareToPlay(samplesPerBlockExpected, sampleRate);
+
         for (auto* track : tracks)
             track->prepareToPlay(samplesPerBlockExpected, sampleRate);
     }
@@ -234,6 +318,15 @@ public:
 
         metronome.process(*bufferToFill.buffer, globalTimelineSeconds, currentBpm, isPlaying);
 
+        if (masterTrack != nullptr)
+        {
+            juce::MidiBuffer emptyMidi;
+            for (auto* vst : masterTrack->getVstPlugins())
+                vst->processBlock(*bufferToFill.buffer, emptyMidi);
+            for (auto* fx : masterTrack->getNativeEffects())
+                fx->process(*bufferToFill.buffer);
+        }
+
         float mGain = masterGainAtomic.load();
         bufferToFill.buffer->applyGain(bufferToFill.startSample, bufferToFill.numSamples, mGain);
 
@@ -251,6 +344,8 @@ public:
     void releaseResources() override
     {
         const juce::ScopedLock sl(trackLock);
+        if (masterTrack != nullptr)
+            masterTrack->releaseResources();
         for (auto* track : tracks)
             track->releaseResources();
     }
@@ -275,9 +370,12 @@ public:
             g.setColour(juce::Colour(0xff2e2e38));
             g.drawRect(regionArea, 1);
 
-            g.setColour(pluginScanner.isScanning() ? juce::Colour(0xff00f5d4) : juce::Colours::grey);
+            juce::String flagsText = "Grade:" + juce::String(showGridLines ? "ON" : "OFF") +
+                                     " | XFade:" + juce::String(autoCrossfadeEnabled ? "ON" : "OFF") +
+                                     " | Lock:" + juce::String(itemsLocked ? "ON" : "OFF");
+            g.setColour(juce::Colours::lightgrey);
             g.setFont(10.5f);
-            g.drawText(pluginScanner.getCurrentStatus(), regionArea.getX() + 8, regionArea.getY(), 252, regionArea.getHeight(), juce::Justification::centredLeft, true);
+            g.drawText(flagsText, regionArea.getX() + 8, regionArea.getY(), 252, regionArea.getHeight(), juce::Justification::centredLeft, true);
 
             for (const auto& reg : regions)
             {
@@ -327,11 +425,24 @@ public:
                 g.fillPath(head);
             }
         }
+
+        if (tracks.isEmpty())
+        {
+            g.setColour(juce::Colours::grey);
+            g.setFont(15.0f);
+            g.drawText("Projeto Limpo - Clique em '+ Faixa' ou pressione Ctrl+T para adicionar uma faixa",
+                       tracksViewport.getBounds(), juce::Justification::centred);
+        }
     }
 
     void resized() override
     {
         auto area = getLocalBounds();
+        if (welcomeOverlay != nullptr)
+        {
+            welcomeOverlay->setBounds(area);
+            welcomeOverlay->toFront(false);
+        }
         scanOverlay.setBounds(area);
         scanOverlay.toFront(false);
 
@@ -343,25 +454,26 @@ public:
         auto controls = topBar.withTrimmedLeft(272).reduced(4, 9);
 
         rewindBtn.setBounds(controls.removeFromLeft(34).reduced(1));
-        playBtn.setBounds(controls.removeFromLeft(52).reduced(1));
-        stopBtn.setBounds(controls.removeFromLeft(52).reduced(1));
-        recBtn.setBounds(controls.removeFromLeft(48).reduced(1));
+        playBtn.setBounds(controls.removeFromLeft(50).reduced(1));
+        stopBtn.setBounds(controls.removeFromLeft(50).reduced(1));
+        recBtn.setBounds(controls.removeFromLeft(46).reduced(1));
 
-        controls.removeFromLeft(8);
-        clickBtn.setBounds(controls.removeFromLeft(58).reduced(1));
-        snapBtn.setBounds(controls.removeFromLeft(52).reduced(1));
-        gridDivBox.setBounds(controls.removeFromLeft(58).reduced(1));
-        splitBtn.setBounds(controls.removeFromLeft(68).reduced(1));
-        mixerToggleBtn.setBounds(controls.removeFromLeft(92).reduced(1));
+        controls.removeFromLeft(6);
+        clickBtn.setBounds(controls.removeFromLeft(54).reduced(1));
+        snapBtn.setBounds(controls.removeFromLeft(48).reduced(1));
+        gridDivBox.setBounds(controls.removeFromLeft(54).reduced(1));
+        masterFxBtn.setBounds(controls.removeFromLeft(78).reduced(1));
+        actionsBtn.setBounds(controls.removeFromLeft(68).reduced(1));
+        mixerToggleBtn.setBounds(controls.removeFromLeft(88).reduced(1));
 
-        audioSettingsBtn.setBounds(controls.removeFromRight(50).reduced(1));
-        bounceBtn.setBounds(controls.removeFromRight(72).reduced(1));
-        openProjBtn.setBounds(controls.removeFromRight(54).reduced(1));
-        saveProjBtn.setBounds(controls.removeFromRight(54).reduced(1));
-        addTrackBtn.setBounds(controls.removeFromRight(68).reduced(1));
-        controls.removeFromRight(6);
-        bpmSlider.setBounds(controls.removeFromRight(84).reduced(1));
-        bpmLabel.setBounds(controls.removeFromRight(32));
+        audioSettingsBtn.setBounds(controls.removeFromRight(48).reduced(1));
+        bounceBtn.setBounds(controls.removeFromRight(58).reduced(1));
+        openProjBtn.setBounds(controls.removeFromRight(48).reduced(1));
+        saveProjBtn.setBounds(controls.removeFromRight(50).reduced(1));
+        addTrackBtn.setBounds(controls.removeFromRight(66).reduced(1));
+        controls.removeFromRight(4);
+        bpmSlider.setBounds(controls.removeFromRight(80).reduced(1));
+        bpmLabel.setBounds(controls.removeFromRight(30));
 
         regionArea = area.removeFromTop(22).reduced(8, 0);
         rulerArea  = area.removeFromTop(22).reduced(8, 0);
@@ -375,7 +487,7 @@ public:
 
 private:
     juce::Label timecodeLabel, statusStateLabel, bpmLabel;
-    juce::TextButton rewindBtn, playBtn, stopBtn, recBtn, clickBtn, snapBtn, splitBtn, mixerToggleBtn;
+    juce::TextButton rewindBtn, playBtn, stopBtn, recBtn, clickBtn, snapBtn, masterFxBtn, actionsBtn, mixerToggleBtn;
     juce::TextButton addTrackBtn, saveProjBtn, openProjBtn, bounceBtn, audioSettingsBtn;
     juce::Slider bpmSlider;
     juce::ComboBox gridDivBox;
@@ -389,14 +501,18 @@ private:
 
     std::atomic<float> masterGainAtomic { 1.0f };
     std::atomic<float> masterPeakAtomic { 0.0f };
+    std::unique_ptr<AudioTrack> masterTrack;
     BottomMixerDock bottomMixer { masterGainAtomic, masterPeakAtomic };
 
+    std::unique_ptr<WelcomeOverlayComponent> welcomeOverlay;
+    std::unique_ptr<ActionListWindow> actionListWindow;
     PluginScanOverlay scanOverlay;
     MetronomeEngine metronome;
     PluginScannerEngine pluginScanner;
     juce::AudioFormatManager audioFormatManager;
     juce::AudioThumbnailCache thumbnailCache { 64 };
     juce::TimeSliceThread backgroundThread { "MultiTrack Disk Thread" };
+    juce::UndoManager undoManager;
 
     juce::CriticalSection trackLock;
     juce::OwnedArray<AudioTrack> tracks;
@@ -407,13 +523,17 @@ private:
     TrackRowComponent* selectedRow = nullptr;
     AudioClip* selectedAudioClip = nullptr;
     MidiClip* selectedMidiClip = nullptr;
+    bool allItemsSelected = false;
 
     bool isPlaying = false;
     bool isRecording = false;
+    bool showGridLines = true;
+    bool autoCrossfadeEnabled = true;
+    bool itemsLocked = false;
     double globalTimelineSeconds = 0.0;
     std::atomic<double> currentBpmAtomic { 120.0 };
     double pixelsPerSecond = 55.0;
-    int trackRowHeight = 62;
+    int trackRowHeight = 64;
     double currentSampleRate = 44100.0;
     int currentBlockSize = 512;
 
@@ -427,14 +547,143 @@ private:
         btn.onClick = std::move(onClick);
     }
 
+    void createNewCleanProject()
+    {
+        stopTransport();
+        trackRackWindow.reset();
+        pianoRollWindow.reset();
+        selectedRow = nullptr;
+        selectedAudioClip = nullptr;
+        selectedMidiClip = nullptr;
+        allItemsSelected = false;
+
+        {
+            const juce::ScopedLock sl(trackLock);
+            tracks.clear(true);
+        }
+        trackRows.clear(true);
+        regions.clear();
+        globalTimelineSeconds = 0.0;
+        layoutTracks();
+        rebuildMixerDock();
+        repaint();
+    }
+
+    void deleteTrackAtIndex(int idx)
+    {
+        stopTransport();
+        trackRackWindow.reset();
+        selectedRow = nullptr;
+        selectedAudioClip = nullptr;
+        selectedMidiClip = nullptr;
+
+        {
+            const juce::ScopedLock sl(trackLock);
+            if (idx >= 0 && idx < tracks.size())
+                tracks.remove(idx, true);
+        }
+        rebuildTrackRowsFromModel();
+        rebuildMixerDock();
+        repaint();
+    }
+
+    void rebuildTrackRowsFromModel()
+    {
+        trackRows.clear(true);
+        for (int idx = 0; idx < tracks.size(); ++idx)
+        {
+            auto* t = tracks[idx];
+            auto* row = trackRows.add(new TrackRowComponent(
+                *t, idx, audioFormatManager, thumbnailCache, trackLock,
+                [this](AudioTrack& tr) { loadPluginForTrack(tr); },
+                [this](AudioTrack& tr, TrackRowComponent& r) { importAudioForTrack(tr, r); },
+                [this](AudioTrack& tr, MidiClip& mc) { openPianoRoll(tr, mc); },
+                [this](double newPos) { seekTo(newPos); },
+                [this](TrackRowComponent* r, AudioClip* ac, MidiClip* mc) { handleSelection(r, ac, mc); },
+                [this](int delIdx) { deleteTrackAtIndex(delIdx); }
+            ));
+            row->onTrackStateChanged = [this] { bottomMixer.refreshMetersAndState(); };
+            row->setPixelsPerSecond(pixelsPerSecond);
+            row->setGridSettings(bpmSlider.getValue(), snapBtn.getToggleState(), gridDivBox.getSelectedId(), showGridLines, itemsLocked);
+            row->rebuildThumbnails();
+            row->syncButtonsFromTrack();
+            tracksContainer.addAndMakeVisible(row);
+        }
+        layoutTracks();
+    }
+
+    void openActionListWindow()
+    {
+        std::vector<ActionListWindow::ActionItem> items = {
+            { "Ctrl + N",         "Novo projeto limpo",                 [this] { createNewCleanProject(); } },
+            { "Ctrl + O",         "Abrir projeto salvo",                [this] { openProjectDialog(); } },
+            { "Ctrl + S",         "Salvar projeto",                     [this] { saveProjectDialog(); } },
+            { "Ctrl + Alt + R",   "Renderizar mixagem final",           [this] { exportProjectDialog(); } },
+            { "Ctrl + P",         "Preferencias de Audio / ASIO",       [this] { showAudioSettings(); } },
+            { "Ctrl + M",         "Mostrar / Ocultar Mixer",            [this] { mixerToggleBtn.triggerClick(); } },
+            { "Ctrl + T",         "Criar nova faixa (Track)",           [this] { addNewTrack(); } },
+            { "Espaco",           "Play / Stop",                        [this] { if (isPlaying) stopTransport(); else startPlayback(); } },
+            { "R",                "Gravar",                             [this] { startRecording(); } },
+            { "Alt + S",          "Ativar / desativar Snap (grade)",    [this] { snapBtn.triggerClick(); } },
+            { "Alt + G",          "Ativar / desativar linhas de grade", [this] { showGridLines = !showGridLines; updateGridParameters(); } },
+            { "Alt + X",          "Ativar / desativar crossfade auto",  [this] { autoCrossfadeEnabled = !autoCrossfadeEnabled; repaint(); } },
+            { "L",                "Ativar / desativar bloqueio (Lock)", [this] { itemsLocked = !itemsLocked; updateGridParameters(); } },
+            { "Ctrl + A",         "Selecionar todos os itens",          [this] { allItemsSelected = true; repaint(); } },
+            { "Shift + S",        "Dividir itens na agulha (Split)",    [this] { splitSelectedOrAtPlayhead(); } },
+            { "F2",               "Propriedades do item selecionado",   [this] { openSelectedItemProperties(); } },
+            { "T",                "Ciclar entre takes do item",         [this] { if (selectedRow && selectedAudioClip) { selectedAudioClip->cycleNextTake(audioFormatManager); selectedRow->rebuildThumbnails(); } } },
+            { "Ctrl + Shift + K", "Analisar picos do item",             [this] { analyzeSelectedClipPeak(); } },
+            { "Ctrl + Shift + N", "Normalizar volume do item",          [this] { normalizeSelectedClip(); } }
+        };
+        actionListWindow = std::make_unique<ActionListWindow>(std::move(items));
+    }
+
+    void openSelectedItemProperties()
+    {
+        if (selectedAudioClip == nullptr)
+        {
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+                "Propriedades do Item [F2]", "Selecione um clipe de audio na timeline primeiro.");
+            return;
+        }
+
+        juce::String info = "Arquivo: " + selectedAudioClip->audioFile.getFileName() +
+                            "\nInicio: " + juce::String(selectedAudioClip->timelineStart, 2) + " s" +
+                            "\nDuracao: " + juce::String(selectedAudioClip->duration, 2) + " s" +
+                            "\nGanho do Item: " + juce::String(juce::Decibels::gainToDecibels(selectedAudioClip->clipGain), 1) + " dB" +
+                            "\nTakes Disponiveis: " + juce::String(selectedAudioClip->takes.size());
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Propriedades do Item [F2]", info);
+    }
+
+    void analyzeSelectedClipPeak()
+    {
+        if (selectedAudioClip == nullptr) return;
+        float peak = selectedAudioClip->analyzePeakLevel(audioFormatManager);
+        float db = juce::Decibels::gainToDecibels(peak + 1e-6f);
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+            "Analise de Pico [Ctrl+Shift+K]",
+            "Pico maximo detectado: " + juce::String(db, 2) + " dBFS (" + juce::String(peak * 100.0f, 1) + "%)");
+    }
+
+    void normalizeSelectedClip()
+    {
+        if (selectedAudioClip == nullptr || selectedRow == nullptr) return;
+        {
+            const juce::ScopedLock sl(trackLock);
+            selectedAudioClip->normalizeClip(audioFormatManager);
+        }
+        selectedRow->repaint();
+    }
+
     void handleSelection(TrackRowComponent* row, AudioClip* ac, MidiClip* mc)
     {
         selectedRow = row;
         selectedAudioClip = ac;
         selectedMidiClip = mc;
+        allItemsSelected = false;
 
         for (auto* r : trackRows)
-            r->setSelectionState(r == row, ac, mc);
+            r->setSelectionState(r == row, ac, mc, false);
     }
 
     void syncAllTrackViews()
@@ -442,6 +691,8 @@ private:
         for (auto* r : trackRows)
             r->syncButtonsFromTrack();
         bottomMixer.refreshMetersAndState();
+        masterFxBtn.setColour(juce::TextButton::buttonColourId,
+                              (masterTrack && masterTrack->hasActiveEffects()) ? juce::Colour(0xff2b9348) : juce::Colour(0xff5e548e));
     }
 
     void rebuildMixerDock()
@@ -461,7 +712,7 @@ private:
         int div = gridDivBox.getSelectedId();
 
         for (auto* row : trackRows)
-            row->setGridSettings(bpm, snap, div);
+            row->setGridSettings(bpm, snap, div, showGridLines, itemsLocked);
         repaint();
     }
 
@@ -472,21 +723,9 @@ private:
         auto* newTrack = tracks.add(new AudioTrack("Track " + juce::String(trackIndex + 1), audioFormatManager, backgroundThread));
         newTrack->prepareToPlay(currentBlockSize, currentSampleRate);
 
-        auto* row = trackRows.add(new TrackRowComponent(
-            *newTrack, trackIndex, audioFormatManager, thumbnailCache, trackLock,
-            [this](AudioTrack& t) { loadPluginForTrack(t); },
-            [this](AudioTrack& t, TrackRowComponent& r) { importAudioForTrack(t, r); },
-            [this](AudioTrack& t, MidiClip& mc) { openPianoRoll(t, mc); },
-            [this](double newPos) { seekTo(newPos); },
-            [this](TrackRowComponent* r, AudioClip* ac, MidiClip* mc) { handleSelection(r, ac, mc); }
-        ));
-        row->onTrackStateChanged = [this] { bottomMixer.refreshMetersAndState(); };
-        row->setPixelsPerSecond(pixelsPerSecond);
-        row->setGridSettings(bpmSlider.getValue(), snapBtn.getToggleState(), gridDivBox.getSelectedId());
-
-        tracksContainer.addAndMakeVisible(row);
-        layoutTracks();
+        rebuildTrackRowsFromModel();
         rebuildMixerDock();
+        repaint();
     }
 
     void openPianoRoll(AudioTrack& track, MidiClip& clip)
@@ -502,7 +741,8 @@ private:
     void layoutTracks()
     {
         int totalHeight = juce::jmax(tracksViewport.getHeight(), trackRows.size() * trackRowHeight);
-        tracksContainer.setSize(tracksViewport.getWidth() - 12, totalHeight);
+        int totalWidth  = juce::jmax(tracksViewport.getWidth() - 12, (int)(300.0 * pixelsPerSecond) + 300);
+        tracksContainer.setSize(totalWidth, totalHeight);
 
         for (int i = 0; i < trackRows.size(); ++i)
             trackRows[i]->setBounds(0, i * trackRowHeight, tracksContainer.getWidth(), trackRowHeight);
@@ -550,7 +790,8 @@ private:
         {
             tracks[i]->stopRecording(globalTimelineSeconds);
             tracks[i]->sendAllNotesOff();
-            trackRows[i]->rebuildThumbnails();
+            if (i < trackRows.size())
+                trackRows[i]->rebuildThumbnails();
         }
     }
 
@@ -566,7 +807,9 @@ private:
 
     void splitSelectedOrAtPlayhead()
     {
+        if (itemsLocked) return;
         bool anySplit = false;
+        double xfade = autoCrossfadeEnabled ? 0.015 : 0.0;
         {
             const juce::ScopedLock sl(trackLock);
             if (selectedRow != nullptr && selectedAudioClip != nullptr)
@@ -583,10 +826,10 @@ private:
                     rightClip->timelineStart     = globalTimelineSeconds;
                     rightClip->sourceStartOffset = selectedAudioClip->sourceStartOffset + leftDur;
                     rightClip->duration          = rightDur;
-                    rightClip->fadeInDuration    = 0.01;
+                    rightClip->fadeInDuration    = xfade;
 
                     selectedAudioClip->duration        = leftDur;
-                    selectedAudioClip->fadeOutDuration = 0.01;
+                    selectedAudioClip->fadeOutDuration = xfade;
 
                     clips.add(std::move(rightClip));
                     anySplit = true;
@@ -605,27 +848,9 @@ private:
                 row->rebuildThumbnails();
     }
 
-    void duplicateSelectedClip()
-    {
-        if (selectedRow == nullptr || selectedAudioClip == nullptr) return;
-        {
-            const juce::ScopedLock sl(trackLock);
-            auto& clips = selectedRow->getTrack().getClips();
-            if (clips.contains(selectedAudioClip))
-            {
-                auto copy = selectedAudioClip->cloneClip(audioFormatManager);
-                copy->timelineStart = selectedAudioClip->getTimelineEnd();
-                auto* rawPtr = copy.get();
-                clips.add(std::move(copy));
-                handleSelection(selectedRow, rawPtr, nullptr);
-            }
-        }
-        selectedRow->rebuildThumbnails();
-    }
-
     void deleteSelectedClip()
     {
-        if (selectedRow == nullptr) return;
+        if (selectedRow == nullptr || itemsLocked) return;
 
         if (selectedAudioClip != nullptr)
         {
@@ -652,6 +877,7 @@ private:
         pixelsPerSecond = juce::jlimit(10.0, 350.0, pixelsPerSecond * factor);
         for (auto* row : trackRows)
             row->setPixelsPerSecond(pixelsPerSecond);
+        layoutTracks();
         repaint();
     }
 
@@ -739,26 +965,7 @@ private:
                                                        backgroundThread, currentSampleRate, currentBlockSize))
                     {
                         bpmSlider.setValue(loadedBpm, juce::sendNotification);
-                        trackRows.clear(true);
-                        for (int idx = 0; idx < tracks.size(); ++idx)
-                        {
-                            auto* t = tracks[idx];
-                            auto* row = trackRows.add(new TrackRowComponent(
-                                *t, idx, audioFormatManager, thumbnailCache, trackLock,
-                                [this](AudioTrack& tr) { loadPluginForTrack(tr); },
-                                [this](AudioTrack& tr, TrackRowComponent& r) { importAudioForTrack(tr, r); },
-                                [this](AudioTrack& tr, MidiClip& mc) { openPianoRoll(tr, mc); },
-                                [this](double newPos) { seekTo(newPos); },
-                                [this](TrackRowComponent* r, AudioClip* ac, MidiClip* mc) { handleSelection(r, ac, mc); }
-                            ));
-                            row->onTrackStateChanged = [this] { bottomMixer.refreshMetersAndState(); };
-                            row->setPixelsPerSecond(pixelsPerSecond);
-                            row->setGridSettings(loadedBpm, snapBtn.getToggleState(), gridDivBox.getSelectedId());
-                            row->rebuildThumbnails();
-                            row->syncButtonsFromTrack();
-                            tracksContainer.addAndMakeVisible(row);
-                        }
-                        layoutTracks();
+                        rebuildTrackRowsFromModel();
                         rebuildMixerDock();
                         repaint();
                     }
@@ -770,7 +977,7 @@ private:
     {
         stopTransport();
 
-        auto chooser = std::make_shared<juce::FileChooser>("Exportar Mixagem Final (MP3, WAV ou FLAC)",
+        auto chooser = std::make_shared<juce::FileChooser>("Renderizar Mixagem Final (MP3, WAV ou FLAC)",
             juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile("Master_Mix.mp3"),
             "*.mp3;*.wav;*.flac");
 
@@ -790,7 +997,7 @@ private:
                     bool ok = statusMsg.startsWith("OK");
                     juce::AlertWindow::showMessageBoxAsync(
                         ok ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
-                        ok ? "Exportacao Concluida" : "Aviso na Exportacao",
+                        ok ? "Renderizacao Concluida" : "Aviso na Renderizacao",
                         statusMsg);
                 }
             });
@@ -884,7 +1091,7 @@ private:
 
         juce::DialogWindow::LaunchOptions o;
         o.content.setOwned(selector);
-        o.dialogTitle = "Configuracoes de Placa de Som (ASIO / WASAPI)";
+        o.dialogTitle = "Preferencias de Placa de Som (ASIO / WASAPI)";
         o.dialogBackgroundColour = juce::Colour(0xff1e1e24);
         o.escapeKeyTriggersCloseButton = true;
         o.useNativeTitleBar = true;
