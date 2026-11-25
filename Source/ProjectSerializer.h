@@ -2,19 +2,41 @@
 #include <JuceHeader.h>
 #include "AudioTrack.h"
 
+struct TimelineRegion
+{
+    juce::String name;
+    double startSec = 0.0;
+    double endSec = 8.0;
+    juce::Colour colour;
+};
+
 class ProjectSerializer
 {
 public:
     static bool saveProject(const juce::File& file,
                             double bpm,
+                            const std::vector<TimelineRegion>& regions,
                             juce::OwnedArray<AudioTrack>& tracks,
                             juce::CriticalSection& trackLock)
     {
         const juce::ScopedLock sl(trackLock);
 
         auto* rootObj = new juce::DynamicObject();
-        rootObj->setProperty("version", "1.0");
+        rootObj->setProperty("version", "1.2");
         rootObj->setProperty("bpm", bpm);
+
+        // Salva as Regiões / Seções da sessão
+        juce::Array<juce::var> regionsArr;
+        for (const auto& reg : regions)
+        {
+            auto* rObj = new juce::DynamicObject();
+            rObj->setProperty("name", reg.name);
+            rObj->setProperty("startSec", reg.startSec);
+            rObj->setProperty("endSec", reg.endSec);
+            rObj->setProperty("colour", reg.colour.toString());
+            regionsArr.add(juce::var(rObj));
+        }
+        rootObj->setProperty("regions", regionsArr);
 
         juce::Array<juce::var> tracksArray;
 
@@ -23,9 +45,11 @@ public:
             auto* tObj = new juce::DynamicObject();
             tObj->setProperty("name", track->getName());
             tObj->setProperty("gain", track->gain);
+            tObj->setProperty("pan", track->pan);
             tObj->setProperty("muted", track->isMuted);
             tObj->setProperty("soloed", track->isSoloed);
             tObj->setProperty("armed", track->isArmed);
+            tObj->setProperty("monitoring", track->isMonitoring);
 
             juce::Array<juce::var> audioClipsArr;
             for (auto* c : track->getClips())
@@ -97,6 +121,7 @@ public:
 
     static bool loadProject(const juce::File& file,
                             double& outBpm,
+                            std::vector<TimelineRegion>& outRegions,
                             juce::OwnedArray<AudioTrack>& tracks,
                             juce::CriticalSection& trackLock,
                             juce::AudioFormatManager& audioFmtMgr,
@@ -112,9 +137,26 @@ public:
 
         const juce::ScopedLock sl(trackLock);
         tracks.clear(true);
+        outRegions.clear();
 
         outBpm = (double)rootObj->getProperty("bpm");
         if (outBpm <= 0.0) outBpm = 120.0;
+
+        if (auto* regArr = rootObj->getProperty("regions").getArray())
+        {
+            for (const auto& rVar : *regArr)
+            {
+                if (auto* rObj = rVar.getDynamicObject())
+                {
+                    outRegions.push_back({
+                        rObj->getProperty("name").toString(),
+                        (double)rObj->getProperty("startSec"),
+                        (double)rObj->getProperty("endSec"),
+                        juce::Colour::fromString(rObj->getProperty("colour").toString())
+                    });
+                }
+            }
+        }
 
         auto* tracksArr = rootObj->getProperty("tracks").getArray();
         if (tracksArr == nullptr) return false;
@@ -126,10 +168,12 @@ public:
 
             auto* track = tracks.add(new AudioTrack(tObj->getProperty("name").toString(), audioFmtMgr, diskThread));
             track->prepareToPlay(blockSize, sampleRate);
-            track->gain     = (float)tObj->getProperty("gain");
-            track->isMuted  = (bool)tObj->getProperty("muted");
-            track->isSoloed = (bool)tObj->getProperty("soloed");
-            track->isArmed  = (bool)tObj->getProperty("armed");
+            track->gain         = (float)tObj->getProperty("gain");
+            track->pan          = tObj->hasProperty("pan") ? (float)tObj->getProperty("pan") : 0.0f;
+            track->isMuted      = (bool)tObj->getProperty("muted");
+            track->isSoloed     = (bool)tObj->getProperty("soloed");
+            track->isArmed      = (bool)tObj->getProperty("armed");
+            track->isMonitoring = tObj->hasProperty("monitoring") ? (bool)tObj->getProperty("monitoring") : false;
 
             if (auto* aClips = tObj->getProperty("audioClips").getArray())
             {
@@ -213,8 +257,12 @@ public:
                         if (vstFile.existsAsFile())
                         {
                             juce::OwnedArray<juce::PluginDescription> descs;
-                            juce::VST3PluginFormat vst3Fmt;
-                            vst3Fmt.findAllTypesForFile(descs, vstFile.getFullPathName());
+                            for (int fmtIdx = 0; fmtIdx < pluginFmtMgr.getNumFormats(); ++fmtIdx)
+                            {
+                                pluginFmtMgr.getFormat(fmtIdx)->findAllTypesForFile(descs, vstFile.getFullPathName());
+                                if (descs.size() > 0) break;
+                            }
+
                             if (descs.size() > 0)
                             {
                                 juce::String err;
