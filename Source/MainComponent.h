@@ -225,22 +225,20 @@ public:
 
         if (!ctrl && !alt && shift && ch == 'w')
         {
-            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-                "Automacao [Shift+W]", "Valores atuais gravados nas envelopes em writing para a selecao de tempo.");
+            writeCurrentEnvelopeValueToSelected(true);
             return true;
         }
         if (ctrl && !alt && !shift && ch == 'w')
         {
-            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-                "Automacao [Ctrl+W]", "Valores atuais gravados nas envelopes em writing do cursor ate o fim do projeto.");
+            writeCurrentEnvelopeValueToSelected(false);
             return true;
         }
-        if (ctrl && alt && !shift && ch == 'p') { toggleEnvelopeFlag("Pan Envelope"); return true; }
-        if (ctrl && alt && !shift && ch == 'v') { toggleEnvelopeFlag("Volume Envelope"); return true; }
-        if (ctrl && alt && shift && ch == 'v')  { toggleEnvelopeFlag("Pre-FX Volume Envelope"); return true; }
-        if (ctrl && alt && shift && ch == 'p')  { toggleEnvelopeFlag("Pre-FX Pan / Take Pitch Envelope"); return true; }
-        if (ctrl && alt && !shift && key == juce::KeyPress::F5Key) { toggleEnvelopeFlag("Mute Envelope"); return true; }
-        if (!ctrl && !alt && shift && ch == 'l') { toggleEnvelopeFlag("Visualizar Envelopes da Faixa Ativa"); return true; }
+        if (ctrl && alt && !shift && ch == 'p') { togglePanEnvelopeOnSelected(); return true; }
+        if (ctrl && alt && !shift && ch == 'v') { toggleVolumeEnvelopeOnSelected(); return true; }
+        if (ctrl && alt && shift && ch == 'v')  { toggleVolumeEnvelopeOnSelected(); return true; }
+        if (ctrl && alt && shift && ch == 'p')  { togglePanEnvelopeOnSelected(); return true; }
+        if (ctrl && alt && !shift && key == juce::KeyPress::F5Key) { toggleMuteOnSelected(); return true; }
+        if (!ctrl && !alt && shift && ch == 'l') { toggleVolumeEnvelopeOnSelected(); return true; }
         if (!ctrl && alt && !shift && ch == 'l') { nudgeEnvelopePointSelection(1, false); return true; }
         if (!ctrl && alt && shift && ch == 'l')  { nudgeEnvelopePointSelection(-1, false); return true; }
         if (!ctrl && alt && shift && ch == 'e')  { insertOrEditEnvelopePointAtCursor(true); return true; }
@@ -251,11 +249,11 @@ public:
         if (!ctrl && alt && shift && ch == 'k')  { nudgeEnvelopePointSelection(1, true); return true; }
         if (!ctrl && alt && (kc == juce::KeyPress::numberPad2 || key.getTextCharacter() == '2')) { nudgeSelectedClipGain(false); return true; }
         if (!ctrl && alt && (kc == juce::KeyPress::numberPad8 || key.getTextCharacter() == '8')) { nudgeSelectedClipGain(true); return true; }
-        if (!ctrl && !alt && shift && ch == 'o') { toggleEnvelopeFlag("Mostrar Envelopes Ativos"); return true; }
-        if (ctrl && shift && !alt && ch == 'i')  { toggleEnvelopeFlag("Inserir Item de Automacao"); return true; }
-        if (ctrl && alt && !shift && key.getTextCharacter() == '4') { toggleEnvelopeFlag("4 Pontos de Envelope na Selecao de Tempo"); return true; }
-        if (!ctrl && !alt && shift && ch == 'h') { toggleEnvelopeFlag("Ocultar Envelopes das Faixas"); return true; }
-        if (ctrl && shift && !alt && ch == 'h')  { toggleEnvelopeFlag("Ocultar Envelopes de Todas as Faixas"); return true; }
+        if (!ctrl && !alt && shift && ch == 'o') { showAllEnvelopes(true); return true; }
+        if (ctrl && shift && !alt && ch == 'i')  { insertOrEditEnvelopePointAtCursor(false); return true; }
+        if (ctrl && alt && !shift && key.getTextCharacter() == '4') { insertFourEnvelopePointsAtCursor(); return true; }
+        if (!ctrl && !alt && shift && ch == 'h') { showAllEnvelopes(false); return true; }
+        if (ctrl && shift && !alt && ch == 'h')  { showAllEnvelopes(false); return true; }
 
         if (ctrl && !alt && !shift && ch == 'c') { copySelectedClip(false); return true; }
         if (!ctrl && !alt && shift && ch == 'c') { copySelectedClip(true); return true; }
@@ -697,6 +695,173 @@ private:
         btn.onClick = std::move(onClick);
     }
 
+    void moveTrackBetweenPositions(int fromIdx, int toIdx)
+    {
+        if (fromIdx < 0 || fromIdx >= tracks.size()) return;
+        int clampedTo = juce::jlimit(0, tracks.size() - 1, toIdx);
+        if (fromIdx == clampedTo) return;
+
+        {
+            const juce::ScopedLock sl(trackLock);
+            tracks.move(fromIdx, clampedTo);
+        }
+        rebuildTrackRowsFromModel();
+        rebuildMixerDock();
+        repaint();
+    }
+
+    void openTrackContextMenu(int trackIdx, TrackRowComponent& rowComp)
+    {
+        if (trackIdx < 0 || trackIdx >= tracks.size()) return;
+        auto* t = tracks[trackIdx];
+
+        juce::PopupMenu spacerSub;
+        spacerSub.addItem(101, "Insert spacer before tracks");
+        spacerSub.addItem(102, "Insert spacer after tracks");
+        spacerSub.addItem(103, "Remove spacers");
+
+        juce::PopupMenu folderSub;
+        folderSub.addItem(201, "Normal track");
+        folderSub.addItem(202, "Folder parent (agrupar abaixo)");
+        folderSub.addItem(203, "End of folder");
+
+        juce::PopupMenu envSub;
+        envSub.addItem(301, t->showVolumeEnvelope ? "Ocultar Envelope de Volume" : "Mostrar Envelope de Volume");
+        envSub.addItem(302, "Inserir Ponto de Envelope no Cursor");
+
+        juce::PopupMenu menu;
+        menu.addItem(1, t->pinnedToTop ? "Unpin track from top" : "Pin tracks to top of arrange view");
+        menu.addSubMenu("Visual spacer", spacerSub);
+        menu.addSeparator();
+        menu.addItem(2, "Insert new track", true, false, "Ctrl+T");
+        menu.addItem(3, "Insert new track as first track");
+        menu.addItem(4, "Insert new track at end of track list");
+        menu.addSeparator();
+        menu.addItem(5, "Remove tracks");
+        menu.addItem(6, "Duplicate tracks");
+        menu.addSubMenu("Move tracks to folder", folderSub);
+        menu.addSeparator();
+        menu.addItem(7, "Lock track controls", true, t->controlsLocked);
+        menu.addItem(8, "Lock track height", true, t->heightLocked);
+        menu.addItem(9, "Lock track items", true, itemsLocked);
+        menu.addItem(10, "Automatic record-arm when track selected", true, t->isArmed);
+        menu.addSeparator();
+        menu.addSubMenu("Envelopes", envSub);
+
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&rowComp), [this, trackIdx](int res)
+        {
+            if (res == 0 || trackIdx < 0 || trackIdx >= tracks.size()) return;
+            auto* tr = tracks[trackIdx];
+
+            switch (res)
+            {
+                case 1: tr->pinnedToTop = !tr->pinnedToTop; break;
+                case 2: addNewTrack(); break;
+                case 3:
+                {
+                    const juce::ScopedLock sl(trackLock);
+                    auto* n = new AudioTrack("Track 1", audioFormatManager, backgroundThread);
+                    n->prepareToPlay(currentBlockSize, currentSampleRate);
+                    tracks.insert(0, n);
+                    rebuildTrackRowsFromModel();
+                    rebuildMixerDock();
+                    break;
+                }
+                case 4: addNewTrack(); break;
+                case 5: deleteTrackAtIndex(trackIdx); break;
+                case 6:
+                {
+                    const juce::ScopedLock sl(trackLock);
+                    auto* dup = new AudioTrack(tr->getName() + " (Copy)", audioFormatManager, backgroundThread);
+                    dup->prepareToPlay(currentBlockSize, currentSampleRate);
+                    dup->gain = tr->gain;
+                    dup->pan = tr->pan;
+                    tracks.insert(trackIdx + 1, dup);
+                    rebuildTrackRowsFromModel();
+                    rebuildMixerDock();
+                    break;
+                }
+                case 7: tr->controlsLocked = !tr->controlsLocked; break;
+                case 8: tr->heightLocked = !tr->heightLocked; break;
+                case 9: itemsLocked = !itemsLocked; updateGridParameters(); break;
+                case 10: tr->isArmed = !tr->isArmed; rebuildTrackRowsFromModel(); break;
+                case 101: tr->spacerBeforePx = 18; layoutTracks(); break;
+                case 102: tr->spacerAfterPx = 18; layoutTracks(); break;
+                case 103: tr->spacerBeforePx = 0; tr->spacerAfterPx = 0; layoutTracks(); break;
+                case 201: tr->folderDepth = 0; repaint(); break;
+                case 202: tr->folderDepth = 1; repaint(); break;
+                case 203: tr->folderDepth = -1; repaint(); break;
+                case 301:
+                    tr->showVolumeEnvelope = !tr->showVolumeEnvelope;
+                    if (tr->showVolumeEnvelope && tr->getVolumeEnvelopeCopy().empty())
+                        tr->addOrUpdateVolumeEnvelopePoint(0.0, tr->gain);
+                    repaint();
+                    break;
+                case 302:
+                    tr->showVolumeEnvelope = true;
+                    tr->addOrUpdateVolumeEnvelopePoint(globalTimelineSeconds, tr->gain);
+                    repaint();
+                    break;
+                default: break;
+            }
+        });
+    }
+
+    void toggleVolumeEnvelopeOnSelected()
+    {
+        if (selectedRow == nullptr) return;
+        auto& tr = selectedRow->getTrack();
+        tr.showVolumeEnvelope = !tr->showVolumeEnvelope;
+        if (tr.showVolumeEnvelope && tr.getVolumeEnvelopeCopy().empty())
+            tr.addOrUpdateVolumeEnvelopePoint(0.0, tr.gain);
+        selectedRow->repaint();
+    }
+
+    void togglePanEnvelopeOnSelected()
+    {
+        if (selectedRow == nullptr) return;
+        selectedRow->getTrack().showPanEnvelope = !selectedRow->getTrack().showPanEnvelope;
+        selectedRow->repaint();
+    }
+
+    void toggleMuteOnSelected()
+    {
+        if (selectedRow == nullptr) return;
+        selectedRow->getTrack().isMuted = !selectedRow->getTrack().isMuted;
+        selectedRow->syncButtonsFromTrack();
+    }
+
+    void showAllEnvelopes(bool show)
+    {
+        for (auto* tr : tracks)
+        {
+            tr->showVolumeEnvelope = show;
+            if (show && tr->getVolumeEnvelopeCopy().empty())
+                tr->addOrUpdateVolumeEnvelopePoint(0.0, tr->gain);
+        }
+        repaint();
+    }
+
+    void writeCurrentEnvelopeValueToSelected(bool timeSelectionOnly)
+    {
+        juce::ignoreUnused(timeSelectionOnly);
+        if (selectedRow == nullptr) return;
+        auto& tr = selectedRow->getTrack();
+        tr.showVolumeEnvelope = true;
+        tr.addOrUpdateVolumeEnvelopePoint(globalTimelineSeconds, tr.gain);
+        selectedRow->repaint();
+    }
+
+    void insertFourEnvelopePointsAtCursor()
+    {
+        if (selectedRow == nullptr) return;
+        auto& tr = selectedRow->getTrack();
+        tr.showVolumeEnvelope = true;
+        for (int i = 0; i < 4; ++i)
+            tr.addOrUpdateVolumeEnvelopePoint(globalTimelineSeconds + i * 0.25, tr.gain);
+        selectedRow->repaint();
+    }
+
     void setGridDivisionAndSnap(int division)
     {
         gridDivBox.setSelectedId(1, juce::dontSendNotification);
@@ -704,12 +869,6 @@ private:
         else if (division == 4 || division == 8 || division == 12) gridDivBox.setSelectedId(4, juce::dontSendNotification);
         snapBtn.setToggleState(true, juce::dontSendNotification);
         updateGridParameters();
-    }
-
-    void toggleEnvelopeFlag(const juce::String& label)
-    {
-        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-            "Envelopes / Automacao", label + " alternado no cursor " + juce::String(globalTimelineSeconds, 2) + "s.");
     }
 
     void nudgeEnvelopePointSelection(int delta, bool keepSelection)
@@ -720,9 +879,12 @@ private:
 
     void insertOrEditEnvelopePointAtCursor(bool editMode)
     {
-        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-            editMode ? "Editar Ponto de Envelope" : "Inserir Ponto de Envelope",
-            "Ponto #" + juce::String(selectedEnvelopePointIdx + 1) + " em " + juce::String(globalTimelineSeconds, 2) + "s.");
+        juce::ignoreUnused(editMode);
+        if (selectedRow == nullptr) return;
+        auto& tr = selectedRow->getTrack();
+        tr.showVolumeEnvelope = true;
+        tr.addOrUpdateVolumeEnvelopePoint(globalTimelineSeconds, tr.gain);
+        selectedRow->repaint();
     }
 
     void nudgeSelectedClipGain(bool up)
@@ -871,7 +1033,9 @@ private:
                 [this](AudioTrack& tr, MidiClip& mc) { openPianoRoll(tr, mc); },
                 [this](double newPos) { seekTo(newPos); },
                 [this](TrackRowComponent* r, AudioClip* ac, MidiClip* mc) { handleSelection(r, ac, mc); },
-                [this](int delIdx) { deleteTrackAtIndex(delIdx); }
+                [this](int delIdx) { deleteTrackAtIndex(delIdx); },
+                [this](int fromIdx, int toIdx) { moveTrackBetweenPositions(fromIdx, toIdx); },
+                [this](int trIdx, TrackRowComponent& rComp) { openTrackContextMenu(trIdx, rComp); }
             ));
             row->onTrackStateChanged = [this] { bottomMixer.refreshMetersAndState(); };
             row->setPixelsPerSecond(pixelsPerSecond);
@@ -1011,12 +1175,18 @@ private:
 
     void layoutTracks()
     {
-        int totalHeight = juce::jmax(tracksViewport.getHeight(), trackRows.size() * trackRowHeight);
+        int curY = 0;
+        for (int i = 0; i < trackRows.size(); ++i)
+        {
+            auto& tr = trackRows[i]->getTrack();
+            curY += tr.spacerBeforePx;
+            trackRows[i]->setBounds(0, curY, juce::jmax(tracksViewport.getWidth() - 12, (int)(300.0 * pixelsPerSecond) + 300), trackRowHeight);
+            curY += trackRowHeight + tr.spacerAfterPx;
+        }
+
+        int totalHeight = juce::jmax(tracksViewport.getHeight(), curY);
         int totalWidth  = juce::jmax(tracksViewport.getWidth() - 12, (int)(300.0 * pixelsPerSecond) + 300);
         tracksContainer.setSize(totalWidth, totalHeight);
-
-        for (int i = 0; i < trackRows.size(); ++i)
-            trackRows[i]->setBounds(0, i * trackRowHeight, tracksContainer.getWidth(), trackRowHeight);
     }
 
     void startPlayback()
