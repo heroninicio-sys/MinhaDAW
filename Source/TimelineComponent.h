@@ -1,5 +1,8 @@
 #pragma once
 #include <JuceHeader.h>
+#include <cmath>
+#include <functional>
+#include <map>
 #include "AudioTrack.h"
 
 class TrackRowComponent : public juce::Component,
@@ -126,9 +129,23 @@ public:
         };
 
         addAndMakeVisible(volumeValueLabel);
+        volumeValueLabel.setEditable(true, true, false);
+        volumeValueLabel.setTooltip("Clique para digitar o volume (ex: 85 ou 100%)");
         volumeValueLabel.setFont(juce::FontOptions(11.0f, juce::Font::bold));
         volumeValueLabel.setColour(juce::Label::textColourId, juce::Colour(0xff90e0ef));
+        volumeValueLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff14161d));
+        volumeValueLabel.setColour(juce::Label::backgroundWhenEditingColourId, juce::Colour(0xff0d0e12));
         volumeValueLabel.setJustificationType(juce::Justification::centredRight);
+        volumeValueLabel.onTextChange = [this]
+        {
+            juce::String txt = volumeValueLabel.getText().replaceCharacter('%', ' ').trim();
+            float pct = txt.getFloatValue();
+            float clampedPct = juce::jlimit(0.0f, 150.0f, pct);
+            track.gain = clampedPct / 100.0f;
+            volumeSlider.setValue(track.gain, juce::dontSendNotification);
+            updateVolumeLabel();
+            if (onTrackStateChanged) onTrackStateChanged();
+        };
         updateVolumeLabel();
 
         addAndMakeVisible(importBtn);
@@ -597,7 +614,7 @@ public:
         auto bottomRow = controlArea.removeFromTop(22);
         muteBtn.setBounds(bottomRow.removeFromLeft(24).reduced(1));
         soloBtn.setBounds(bottomRow.removeFromLeft(24).reduced(1));
-        volumeValueLabel.setBounds(bottomRow.removeFromRight(42));
+        volumeValueLabel.setBounds(bottomRow.removeFromRight(46));
         volumeSlider.setBounds(bottomRow.reduced(2, 0));
     }
 
