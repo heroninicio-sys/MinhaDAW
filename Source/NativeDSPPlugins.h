@@ -18,48 +18,48 @@ public:
     bool bypassed = false;
 };
 
-class MultiBandEQEffect : public NativeEffect
+class MultiChannelEQEffect : public NativeEffect
 {
 public:
-    MultiBandEQEffect(int initialBands = 8)
+    explicit MultiChannelEQEffect(int initialChannels = 16)
     {
-        setBandCount(initialBands);
+        setChannelCount(initialChannels);
     }
 
-    juce::String getName() const override   { return "EQ Multi-Banda (" + juce::String(numBands) + " ch)"; }
+    juce::String getName() const override   { return "Equalizador Multicanal (" + juce::String(numChannels) + " ch)"; }
     juce::String getTypeId() const override { return "NativeEQ"; }
 
-    void setBandCount(int bands)
+    void setChannelCount(int channels)
     {
         const juce::ScopedLock sl(lock);
-        numBands = juce::jlimit(8, 120, (bands / 8) * 8);
-        bandGainsDb.assign((size_t)numBands, 0.0f);
+        numChannels = juce::jlimit(1, 120, channels);
+        channelGainsDb.assign((size_t)numChannels, 0.0f);
         rebuildFilters();
     }
 
-    int getBandCount() const { return numBands; }
+    int getChannelCount() const { return numChannels; }
 
-    void setBandGain(int bandIndex, float gainDb)
+    void setChannelGain(int chIndex, float gainDb)
     {
         const juce::ScopedLock sl(lock);
-        if (bandIndex >= 0 && bandIndex < numBands)
+        if (chIndex >= 0 && chIndex < numChannels)
         {
-            bandGainsDb[(size_t)bandIndex] = juce::jlimit(-18.0f, 18.0f, gainDb);
-            updateFilterCoefficients(bandIndex);
+            channelGainsDb[(size_t)chIndex] = juce::jlimit(-18.0f, 18.0f, gainDb);
+            updateFilterCoefficients(chIndex);
         }
     }
 
-    float getBandGain(int bandIndex) const
+    float getChannelGain(int chIndex) const
     {
-        if (bandIndex >= 0 && bandIndex < numBands)
-            return bandGainsDb[(size_t)bandIndex];
+        if (chIndex >= 0 && chIndex < numChannels)
+            return channelGainsDb[(size_t)chIndex];
         return 0.0f;
     }
 
     void prepare(double sr, int) override
     {
         const juce::ScopedLock sl(lock);
-        sampleRate = sr > 0.0 ? sr : 44100.0;
+        sampleRate = sr > 0.0 ? sr : 48000.0;
         rebuildFilters();
     }
 
@@ -68,15 +68,15 @@ public:
         if (bypassed) return;
         const juce::ScopedLock sl(lock);
 
-        int numCh = juce::jmin(2, buffer.getNumChannels());
+        int bufCh = juce::jmin(2, buffer.getNumChannels());
         int numSamples = buffer.getNumSamples();
 
-        for (int b = 0; b < numBands; ++b)
+        for (int b = 0; b < numChannels; ++b)
         {
-            if (std::abs(bandGainsDb[(size_t)b]) < 0.05f)
+            if (std::abs(channelGainsDb[(size_t)b]) < 0.05f)
                 continue;
 
-            for (int ch = 0; ch < numCh; ++ch)
+            for (int ch = 0; ch < bufCh; ++ch)
             {
                 float* samples = buffer.getWritePointer(ch);
                 auto& filter = filters[(size_t)ch][(size_t)b];
@@ -89,9 +89,9 @@ public:
     juce::var saveState() const override
     {
         auto* obj = new juce::DynamicObject();
-        obj->setProperty("numBands", numBands);
+        obj->setProperty("numChannels", numChannels);
         juce::Array<juce::var> gains;
-        for (float g : bandGainsDb) gains.add(g);
+        for (float g : channelGainsDb) gains.add(g);
         obj->setProperty("gains", gains);
         return juce::var(obj);
     }
@@ -100,12 +100,13 @@ public:
     {
         if (auto* obj = state.getDynamicObject())
         {
-            int bCount = (int)obj->getProperty("numBands");
-            setBandCount(bCount > 0 ? bCount : 8);
+            int cCount = obj->hasProperty("numChannels") ? (int)obj->getProperty("numChannels")
+                                                         : (int)obj->getProperty("numBands");
+            setChannelCount(cCount > 0 ? cCount : 16);
             if (auto* arr = obj->getProperty("gains").getArray())
             {
-                for (int i = 0; i < juce::jmin(numBands, arr->size()); ++i)
-                    setBandGain(i, (float)(*arr)[i]);
+                for (int i = 0; i < juce::jmin(numChannels, arr->size()); ++i)
+                    setChannelGain(i, (float)(*arr)[i]);
             }
         }
     }
@@ -115,20 +116,20 @@ public:
 private:
     void rebuildFilters()
     {
-        filters[0].resize((size_t)numBands);
-        filters[1].resize((size_t)numBands);
-        for (int b = 0; b < numBands; ++b)
+        filters[0].resize((size_t)numChannels);
+        filters[1].resize((size_t)numChannels);
+        for (int b = 0; b < numChannels; ++b)
             updateFilterCoefficients(b);
     }
 
     void updateFilterCoefficients(int b)
     {
-        double norm = (numBands > 1) ? (double)b / (double)(numBands - 1) : 0.5;
+        double norm = (numChannels > 1) ? (double)b / (double)(numChannels - 1) : 0.5;
         double freq = 20.0 * std::pow(1000.0, norm);
         freq = juce::jlimit(20.0, sampleRate * 0.45, freq);
 
-        double q = juce::jlimit(1.2, 14.0, (double)numBands / 8.0);
-        float linearGain = juce::Decibels::decibelsToGain(bandGainsDb[(size_t)b]);
+        double q = juce::jlimit(1.2, 14.0, (double)numChannels / 8.0);
+        float linearGain = juce::Decibels::decibelsToGain(channelGainsDb[(size_t)b]);
 
         auto coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter(sampleRate, (float)freq, (float)q, linearGain);
         filters[0][(size_t)b].coefficients = coeffs;
@@ -136,9 +137,9 @@ private:
     }
 
     juce::CriticalSection lock;
-    double sampleRate = 44100.0;
-    int numBands = 8;
-    std::vector<float> bandGainsDb;
+    double sampleRate = 48000.0;
+    int numChannels = 16;
+    std::vector<float> channelGainsDb;
     std::vector<juce::dsp::IIR::Filter<float>> filters[2];
 };
 
@@ -156,7 +157,7 @@ public:
 
     void prepare(double sr, int) override
     {
-        sampleRate = sr > 0.0 ? sr : 44100.0;
+        sampleRate = sr > 0.0 ? sr : 48000.0;
         envelope = 0.0f;
     }
 
@@ -224,7 +225,7 @@ public:
     std::unique_ptr<juce::Component> createEditor() override;
 
 private:
-    double sampleRate = 44100.0;
+    double sampleRate = 48000.0;
     float envelope = 0.0f;
 };
 
@@ -290,7 +291,7 @@ public:
 
     void prepare(double sr, int) override
     {
-        sampleRate = sr > 0.0 ? sr : 44100.0;
+        sampleRate = sr > 0.0 ? sr : 48000.0;
         analysisBuffer.assign(2048, 0.0f);
         delayLine.assign(4096, 0.0f);
         writeIdx = 0;
@@ -420,7 +421,7 @@ private:
         return delayLine[(size_t)idx0] * (1.0f - frac) + delayLine[(size_t)idx1] * frac;
     }
 
-    double sampleRate = 44100.0;
+    double sampleRate = 48000.0;
     std::vector<float> analysisBuffer;
     std::vector<float> delayLine;
     int analysisWritePos = 0;
@@ -441,7 +442,7 @@ public:
 
     void prepare(double sr, int) override
     {
-        reverb.setSampleRate(sr > 0.0 ? sr : 44100.0);
+        reverb.setSampleRate(sr > 0.0 ? sr : 48000.0);
         updateParams();
     }
 
@@ -505,7 +506,7 @@ public:
 
     void prepare(double sr, int) override
     {
-        sampleRate = sr > 0.0 ? sr : 44100.0;
+        sampleRate = sr > 0.0 ? sr : 48000.0;
         int maxSamples = (int)(sampleRate * 2.5);
         delayBuffer.setSize(2, maxSamples);
         delayBuffer.clear();
@@ -560,46 +561,72 @@ public:
     std::unique_ptr<juce::Component> createEditor() override;
 
 private:
-    double sampleRate = 44100.0;
+    double sampleRate = 48000.0;
     juce::AudioBuffer<float> delayBuffer;
     int writePos = 0;
 };
 
-class MultiBandEQEditor : public juce::Component
+class MultiChannelEQEditor : public juce::Component
 {
 public:
-    MultiBandEQEditor(MultiBandEQEffect& eqRef) : eq(eqRef)
+    explicit MultiChannelEQEditor(MultiChannelEQEffect& eqRef) : eq(eqRef)
     {
-        addAndMakeVisible(bandsLabel);
-        bandsLabel.setText("Canais EQ (Multiplos de 8):", juce::dontSendNotification);
-        bandsLabel.setColour(juce::Label::textColourId, juce::Colours::white);
+        addAndMakeVisible(channelsLabel);
+        channelsLabel.setText("Quantidade de Canais:", juce::dontSendNotification);
+        channelsLabel.setColour(juce::Label::textColourId, juce::Colours::white);
 
-        addAndMakeVisible(bandSelector);
-        for (int b = 8; b <= 120; b += 8)
-            bandSelector.addItem(juce::String(b) + " Bandas", b);
-        bandSelector.setSelectedId(eq.getBandCount(), juce::dontSendNotification);
-        bandSelector.onChange = [this]
+        addAndMakeVisible(channelCountInput);
+        channelCountInput.setText(juce::String(eq.getChannelCount()), juce::dontSendNotification);
+        channelCountInput.setEditable(true, true, false);
+        channelCountInput.setColour(juce::Label::backgroundColourId, juce::Colour(0xff252836));
+        channelCountInput.setColour(juce::Label::textColourId, juce::Colour(0xff00f5d4));
+        channelCountInput.setJustificationType(juce::Justification::centred);
+        channelCountInput.setTooltip("Digite o numero de canais (1 a 120) e pressione Enter");
+        channelCountInput.onTextChange = [this]
         {
-            eq.setBandCount(bandSelector.getSelectedId());
-            repaint();
+            int val = channelCountInput.getText().trim().getIntValue();
+            if (val > 0)
+            {
+                eq.setChannelCount(val);
+                channelCountInput.setText(juce::String(eq.getChannelCount()), juce::dontSendNotification);
+                repaint();
+            }
+        };
+
+        addAndMakeVisible(presetChannelsBox);
+        presetChannelsBox.addItem("8 Canais", 8);
+        presetChannelsBox.addItem("16 Canais", 16);
+        presetChannelsBox.addItem("32 Canais", 32);
+        presetChannelsBox.addItem("64 Canais", 64);
+        presetChannelsBox.addItem("120 Canais", 120);
+        presetChannelsBox.setText("Presets", juce::dontSendNotification);
+        presetChannelsBox.onChange = [this]
+        {
+            int sel = presetChannelsBox.getSelectedId();
+            if (sel > 0)
+            {
+                eq.setChannelCount(sel);
+                channelCountInput.setText(juce::String(eq.getChannelCount()), juce::dontSendNotification);
+                repaint();
+            }
         };
 
         addAndMakeVisible(resetBtn);
         resetBtn.setButtonText("Flat (0 dB)");
         resetBtn.onClick = [this]
         {
-            for (int i = 0; i < eq.getBandCount(); ++i)
-                eq.setBandGain(i, 0.0f);
+            for (int i = 0; i < eq.getChannelCount(); ++i)
+                eq.setChannelGain(i, 0.0f);
             repaint();
         };
 
-        setSize(760, 320);
+        setSize(760, 330);
     }
 
     void paint(juce::Graphics& g) override
     {
         g.fillAll(juce::Colour(0xff181820));
-        auto graph = getLocalBounds().reduced(16).withTrimmedTop(42);
+        auto graph = getLocalBounds().reduced(16).withTrimmedTop(46);
 
         g.setColour(juce::Colour(0xff22222d));
         g.fillRoundedRectangle(graph.toFloat(), 6.0f);
@@ -608,12 +635,12 @@ public:
         g.setColour(juce::Colours::grey.withAlpha(0.5f));
         g.drawHorizontalLine((int)midY, (float)graph.getX(), (float)graph.getRight());
 
-        int count = eq.getBandCount();
-        float barW = (float)graph.getWidth() / (float)count;
+        int count = eq.getChannelCount();
+        float barW = (float)graph.getWidth() / (float)juce::jmax(1, count);
 
         for (int i = 0; i < count; ++i)
         {
-            float gainDb = eq.getBandGain(i);
+            float gainDb = eq.getChannelGain(i);
             float norm = gainDb / 18.0f;
             float barH = norm * ((float)graph.getHeight() * 0.45f);
             float x = (float)graph.getX() + ((float)i * barW);
@@ -630,36 +657,39 @@ public:
         g.drawText("20 Hz", graph.getX() + 4, graph.getBottom() - 18, 60, 16, juce::Justification::centredLeft);
         g.drawText("1 kHz", graph.getCentreX() - 30, graph.getBottom() - 18, 60, 16, juce::Justification::centred);
         g.drawText("20 kHz", graph.getRight() - 64, graph.getBottom() - 18, 60, 16, juce::Justification::centredRight);
-        g.drawText("Arraste o mouse sobre as barras para desenhar a curva de EQ", graph.reduced(6).removeFromTop(18), juce::Justification::centredLeft);
+        g.drawText("Canais ativos: " + juce::String(count) + " | Arraste sobre os canais para ajustar",
+                   graph.reduced(6).removeFromTop(18), juce::Justification::centredLeft);
     }
 
-    void mouseDown(const juce::MouseEvent& e) override { editBandAt(e.getPosition()); }
-    void mouseDrag(const juce::MouseEvent& e) override { editBandAt(e.getPosition()); }
+    void mouseDown(const juce::MouseEvent& e) override { editChannelAt(e.getPosition()); }
+    void mouseDrag(const juce::MouseEvent& e) override { editChannelAt(e.getPosition()); }
 
     void resized() override
     {
-        auto top = getLocalBounds().reduced(16).removeFromTop(30);
-        bandsLabel.setBounds(top.removeFromLeft(180));
-        bandSelector.setBounds(top.removeFromLeft(140));
+        auto top = getLocalBounds().reduced(16, 12).removeFromTop(30);
+        channelsLabel.setBounds(top.removeFromLeft(155));
+        channelCountInput.setBounds(top.removeFromLeft(64));
+        top.removeFromLeft(8);
+        presetChannelsBox.setBounds(top.removeFromLeft(120));
         resetBtn.setBounds(top.removeFromRight(100));
     }
 
 private:
-    void editBandAt(juce::Point<int> p)
+    void editChannelAt(juce::Point<int> p)
     {
-        auto graph = getLocalBounds().reduced(16).withTrimmedTop(42);
+        auto graph = getLocalBounds().reduced(16).withTrimmedTop(46);
         if (!graph.contains(p)) return;
 
-        int count = eq.getBandCount();
-        int bandIdx = juce::jlimit(0, count - 1, (int)(((float)(p.x - graph.getX()) / (float)graph.getWidth()) * (float)count));
+        int count = eq.getChannelCount();
+        int chIdx = juce::jlimit(0, count - 1, (int)(((float)(p.x - graph.getX()) / (float)graph.getWidth()) * (float)count));
         float normY = ((float)graph.getCentreY() - (float)p.y) / ((float)graph.getHeight() * 0.45f);
-        eq.setBandGain(bandIdx, juce::jlimit(-18.0f, 18.0f, normY * 18.0f));
+        eq.setChannelGain(chIdx, juce::jlimit(-18.0f, 18.0f, normY * 18.0f));
         repaint();
     }
 
-    MultiBandEQEffect& eq;
-    juce::Label bandsLabel;
-    juce::ComboBox bandSelector;
+    MultiChannelEQEffect& eq;
+    juce::Label channelsLabel, channelCountInput;
+    juce::ComboBox presetChannelsBox;
     juce::TextButton resetBtn;
 };
 
@@ -712,9 +742,9 @@ private:
     juce::OwnedArray<juce::Slider> sliders;
 };
 
-inline std::unique_ptr<juce::Component> MultiBandEQEffect::createEditor()
+inline std::unique_ptr<juce::Component> MultiChannelEQEffect::createEditor()
 {
-    return std::make_unique<MultiBandEQEditor>(*this);
+    return std::make_unique<MultiChannelEQEditor>(*this);
 }
 
 inline std::unique_ptr<juce::Component> CompressorEffect::createEditor()
