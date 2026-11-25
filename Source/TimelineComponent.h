@@ -26,7 +26,8 @@ public:
                       std::function<void(AudioTrack&, TrackRowComponent&)> onImportAudioCallback,
                       std::function<void(AudioTrack&, MidiClip&)> onOpenPianoRollCallback,
                       std::function<void(double)> onSeekCallback,
-                      std::function<void(TrackRowComponent*, AudioClip*, MidiClip*)> onSelectCallback)
+                      std::function<void(TrackRowComponent*, AudioClip*, MidiClip*)> onSelectCallback,
+                      std::function<void(int)> onDeleteTrackCallback)
         : track(trackRef),
           index(trackIndex),
           formatManager(formatMgr),
@@ -36,7 +37,8 @@ public:
           importAudioCallback(std::move(onImportAudioCallback)),
           openPianoRollCallback(std::move(onOpenPianoRollCallback)),
           seekCallback(std::move(onSeekCallback)),
-          selectCallback(std::move(onSelectCallback))
+          selectCallback(std::move(onSelectCallback)),
+          deleteTrackCallback(std::move(onDeleteTrackCallback))
     {
         const juce::Colour palette[] = {
             juce::Colour(0xff2ec4b6), juce::Colour(0xff3a86ff), juce::Colour(0xff38b000),
@@ -66,13 +68,25 @@ public:
 
         addAndMakeVisible(nameLabel);
         nameLabel.setText(track.getName(), juce::dontSendNotification);
+        nameLabel.setEditable(false, true, false);
         nameLabel.setColour(juce::Label::textColourId, juce::Colours::white);
         nameLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff1e1e24));
-        nameLabel.setFont(juce::FontOptions(12.5f, juce::Font::bold));
+        nameLabel.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+        nameLabel.onTextChange = [this]
+        {
+            track.setName(nameLabel.getText());
+            if (onTrackStateChanged) onTrackStateChanged();
+        };
+
+        addAndMakeVisible(delTrackBtn);
+        delTrackBtn.setButtonText("X");
+        delTrackBtn.setTooltip("Excluir esta Faixa");
+        delTrackBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff6b1d24));
+        delTrackBtn.onClick = [this] { if (deleteTrackCallback) deleteTrackCallback(index); };
 
         addAndMakeVisible(muteBtn);
         muteBtn.setButtonText("M");
-        muteBtn.setTooltip("Mute [M]");
+        muteBtn.setTooltip("Mute");
         muteBtn.setClickingTogglesState(true);
         muteBtn.setToggleState(track.isMuted, juce::dontSendNotification);
         muteBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d2d34));
@@ -114,7 +128,7 @@ public:
 
         addAndMakeVisible(importBtn);
         importBtn.setButtonText("WAV");
-        importBtn.setTooltip("Importar Audio (WAV/MP3/FLAC)");
+        importBtn.setTooltip("Importar Audio");
         importBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d2d36));
         importBtn.onClick = [this] { if (importAudioCallback) importAudioCallback(track, *this); };
 
@@ -137,7 +151,7 @@ public:
 
         addAndMakeVisible(fxBtn);
         fxBtn.setButtonText("FX");
-        fxBtn.setTooltip("Rack de Plugins (EQ 8..120ch, Auto-Tune, Comp, VST3)");
+        fxBtn.setTooltip("Abrir Rack de Efeitos e Plugins");
         fxBtn.onClick = [this] { if (loadPluginCallback) loadPluginCallback(track); };
     }
 
@@ -157,11 +171,12 @@ public:
         repaint();
     }
 
-    void setSelectionState(bool trackSel, AudioClip* selAudio, MidiClip* selMidi)
+    void setSelectionState(bool trackSel, AudioClip* selAudio, MidiClip* selMidi, bool allItemsSel = false)
     {
         isTrackSelected = trackSel;
         selectedAudioClip = selAudio;
         selectedMidiClip = selMidi;
+        selectAllItemsActive = allItemsSel;
         repaint();
     }
 
@@ -180,11 +195,13 @@ public:
 
     void setPlayheadPosition(double seconds) { currentPlayheadSec = seconds; repaint(); }
     void setPixelsPerSecond(double pps)      { pixelsPerSecond = pps; repaint(); }
-    void setGridSettings(double newBpm, bool snap, int division)
+    void setGridSettings(double newBpm, bool snap, int division, bool showGrid, bool lockItems)
     {
         bpm = newBpm;
         snapEnabled = snap;
         gridDivision = division;
+        showGridLines = showGrid;
+        itemsLocked = lockItems;
         repaint();
     }
 
@@ -200,7 +217,7 @@ public:
 
     void mouseMove(const juce::MouseEvent& e) override
     {
-        if (e.x < headerWidth)
+        if (e.x < headerWidth || itemsLocked)
         {
             setMouseCursor(juce::MouseCursor::NormalCursor);
             return;
@@ -257,23 +274,13 @@ public:
             if (rect.contains(e.getPosition()))
             {
                 notifySelected(nullptr, mc);
-
-                if (e.mods.isPopupMenu())
+                if (!itemsLocked)
                 {
-                    juce::PopupMenu menu;
-                    menu.addItem(1, "Abrir Piano Roll");
-                    menu.addItem(2, "Excluir Clipe MIDI [Del]");
-                    menu.showMenuAsync(juce::PopupMenu::Options(), [this, mc](int res)
-                    {
-                        if (res == 1 && openPianoRollCallback) openPianoRollCallback(track, *mc);
-                        else if (res == 2) { const juce::ScopedLock sl(audioLock); track.removeMidiClip(mc); notifySelected(nullptr, nullptr); repaint(); }
-                    });
-                    return;
+                    activeMidiClip = mc;
+                    currentDragMode = DragMode::MoveMidiClip;
+                    dragStartX = e.x;
+                    initialMidiStartBeat = mc->timelineStartBeats;
                 }
-                activeMidiClip = mc;
-                currentDragMode = DragMode::MoveMidiClip;
-                dragStartX = e.x;
-                initialMidiStartBeat = mc->timelineStartBeats;
                 return;
             }
         }
@@ -286,50 +293,7 @@ public:
         else
             notifySelected(nullptr, nullptr);
 
-        if (e.mods.isPopupMenu() && hitClip != nullptr)
-        {
-            juce::PopupMenu menu;
-            menu.addItem(1, "Cortar Clipe na Agulha [S]");
-            menu.addItem(2, "Duplicar Clipe [Ctrl+D]");
-            menu.addItem(3, "Remover Fade In / Fade Out");
-            menu.addSeparator();
-            menu.addItem(4, "Excluir Clipe [Del]");
-
-            menu.showMenuAsync(juce::PopupMenu::Options(), [this, hitClip](int result)
-            {
-                if (result == 1)
-                {
-                    { const juce::ScopedLock sl(audioLock); track.splitClipsAt(currentPlayheadSec); }
-                    rebuildThumbnails();
-                }
-                else if (result == 2)
-                {
-                    {
-                        const juce::ScopedLock sl(audioLock);
-                        auto copy = hitClip->cloneClip(formatManager);
-                        copy->timelineStart = hitClip->getTimelineEnd();
-                        track.getClips().add(std::move(copy));
-                    }
-                    rebuildThumbnails();
-                }
-                else if (result == 3)
-                {
-                    const juce::ScopedLock sl(audioLock);
-                    hitClip->fadeInDuration = 0.0;
-                    hitClip->fadeOutDuration = 0.0;
-                    repaint();
-                }
-                else if (result == 4)
-                {
-                    { const juce::ScopedLock sl(audioLock); track.removeClip(hitClip); }
-                    notifySelected(nullptr, nullptr);
-                    rebuildThumbnails();
-                }
-            });
-            return;
-        }
-
-        if (hitClip != nullptr && mode != DragMode::None)
+        if (hitClip != nullptr && mode != DragMode::None && !itemsLocked)
         {
             activeAudioClip = hitClip;
             currentDragMode = mode;
@@ -340,7 +304,7 @@ public:
             initialFadeIn        = hitClip->fadeInDuration;
             initialFadeOut       = hitClip->fadeOutDuration;
         }
-        else
+        else if (hitClip == nullptr)
         {
             double clickedTime = applySnap((double)(e.x - headerWidth) / pixelsPerSecond);
             if (seekCallback)
@@ -350,7 +314,7 @@ public:
 
     void mouseDrag(const juce::MouseEvent& e) override
     {
-        if (currentDragMode == DragMode::None) return;
+        if (currentDragMode == DragMode::None || itemsLocked) return;
 
         double deltaSeconds = (double)(e.x - dragStartX) / pixelsPerSecond;
         const juce::ScopedLock sl(audioLock);
@@ -440,21 +404,24 @@ public:
         g.setColour(index % 2 == 0 ? juce::Colour(0xff232328) : juce::Colour(0xff26262c));
         g.fillRect(bounds);
 
-        double beatSec = 60.0 / juce::jmax(20.0, bpm);
-        double stepSec = beatSec / (double)gridDivision;
-        int totalSteps = (int)((double)(getWidth() - headerWidth) / (stepSec * pixelsPerSecond)) + 2;
-
-        for (int step = 0; step < totalSteps; ++step)
+        if (showGridLines)
         {
-            int gridX = headerWidth + (int)std::round(((double)step * stepSec) * pixelsPerSecond);
-            if (gridX > getWidth()) break;
+            double beatSec = 60.0 / juce::jmax(20.0, bpm);
+            double stepSec = beatSec / (double)gridDivision;
+            int totalSteps = (int)((double)(getWidth() - headerWidth) / (stepSec * pixelsPerSecond)) + 2;
 
-            int stepsPerBar = 4 * gridDivision;
-            if (step % stepsPerBar == 0)       g.setColour(juce::Colour(0xff42424d));
-            else if (step % gridDivision == 0) g.setColour(juce::Colour(0xff303039));
-            else                               g.setColour(juce::Colour(0xff282830));
+            for (int step = 0; step < totalSteps; ++step)
+            {
+                int gridX = headerWidth + (int)std::round(((double)step * stepSec) * pixelsPerSecond);
+                if (gridX > getWidth()) break;
 
-            g.drawVerticalLine(gridX, (float)bounds.getY(), (float)bounds.getBottom());
+                int stepsPerBar = 4 * gridDivision;
+                if (step % stepsPerBar == 0)       g.setColour(juce::Colour(0xff42424d));
+                else if (step % gridDivision == 0) g.setColour(juce::Colour(0xff303039));
+                else                               g.setColour(juce::Colour(0xff282830));
+
+                g.drawVerticalLine(gridX, (float)bounds.getY(), (float)bounds.getBottom());
+            }
         }
 
         g.setColour(juce::Colour(0xff19191e));
@@ -465,7 +432,7 @@ public:
             auto clipRect = getAudioClipBounds(*clip);
             if (!clipRect.intersects(bounds)) continue;
 
-            bool isSelected = (clip == selectedAudioClip);
+            bool isSelected = (clip == selectedAudioClip) || selectAllItemsActive;
 
             g.setColour(isSelected ? trackAccentColour.brighter(0.15f) : trackAccentColour.withBrightness(0.48f));
             g.fillRoundedRectangle(clipRect.toFloat(), 3.0f);
@@ -480,7 +447,7 @@ public:
                 it->second->drawChannels(g, clipRect.withTrimmedTop(16).reduced(1, 2),
                                          clip->sourceStartOffset,
                                          clip->sourceStartOffset + clip->duration,
-                                         1.0f);
+                                         clip->clipGain);
             }
 
             if (clip->fadeInDuration > 0.005)
@@ -513,19 +480,16 @@ public:
                            (float)clipRect.getRight(), (float)clipRect.getBottom(), 1.4f);
             }
 
-            float handleInX  = (float)clipRect.getX() + (float)(clip->fadeInDuration * pixelsPerSecond);
-            float handleOutX = (float)clipRect.getRight() - (float)(clip->fadeOutDuration * pixelsPerSecond);
-            g.setColour(juce::Colours::white);
-            g.fillRect(handleInX - 3.0f, (float)clipRect.getY(), 6.0f, 6.0f);
-            g.fillRect(handleOutX - 3.0f, (float)clipRect.getY(), 6.0f, 6.0f);
-
             g.setColour(isSelected ? juce::Colours::white : juce::Colours::black.withAlpha(0.7f));
             g.drawRoundedRectangle(clipRect.toFloat(), 3.0f, isSelected ? 1.8f : 1.0f);
 
+            juce::String titleText = clip->audioFile.getFileNameWithoutExtension();
+            if (clip->takes.size() > 1)
+                titleText += " [Take " + juce::String(clip->activeTakeIndex + 1) + "/" + juce::String(clip->takes.size()) + "]";
+
             g.setColour(juce::Colours::white);
             g.setFont(juce::FontOptions(10.5f, juce::Font::bold));
-            g.drawText(clip->audioFile.getFileNameWithoutExtension(),
-                       titleStrip.reduced(6, 0), juce::Justification::centredLeft, true);
+            g.drawText(titleText, titleStrip.reduced(6, 0), juce::Justification::centredLeft, true);
         }
 
         for (auto* mc : track.getMidiClips())
@@ -533,7 +497,7 @@ public:
             auto mcRect = getMidiClipBounds(*mc);
             if (!mcRect.intersects(bounds)) continue;
 
-            bool isSelected = (mc == selectedMidiClip);
+            bool isSelected = (mc == selectedMidiClip) || selectAllItemsActive;
 
             g.setColour(isSelected ? juce::Colour(0xff2b9348) : juce::Colour(0xff1e6b36));
             g.fillRoundedRectangle(mcRect.toFloat(), 3.0f);
@@ -572,6 +536,7 @@ public:
         auto topRow = controlArea.removeFromTop(22);
         armBtn.setBounds(topRow.removeFromLeft(22).reduced(1));
         monBtn.setBounds(topRow.removeFromLeft(34).reduced(1));
+        delTrackBtn.setBounds(topRow.removeFromRight(22).reduced(1));
         fxBtn.setBounds(topRow.removeFromRight(28).reduced(1));
         midiBtn.setBounds(topRow.removeFromRight(36).reduced(1));
         importBtn.setBounds(topRow.removeFromRight(32).reduced(1));
@@ -647,8 +612,11 @@ private:
     double bpm = 120.0;
     bool snapEnabled = true;
     int gridDivision = 1;
+    bool showGridLines = true;
+    bool itemsLocked = false;
 
     bool isTrackSelected = false;
+    bool selectAllItemsActive = false;
     AudioClip* selectedAudioClip = nullptr;
     MidiClip* selectedMidiClip = nullptr;
 
@@ -664,7 +632,7 @@ private:
     double initialMidiStartBeat = 0.0;
 
     juce::Label nameLabel;
-    juce::TextButton armBtn, monBtn, muteBtn, soloBtn, importBtn, midiBtn, fxBtn;
+    juce::TextButton armBtn, monBtn, delTrackBtn, muteBtn, soloBtn, importBtn, midiBtn, fxBtn;
     juce::Slider volumeSlider;
 
     std::function<void(AudioTrack&)> loadPluginCallback;
@@ -672,4 +640,5 @@ private:
     std::function<void(AudioTrack&, MidiClip&)> openPianoRollCallback;
     std::function<void(double)> seekCallback;
     std::function<void(TrackRowComponent*, AudioClip*, MidiClip*)> selectCallback;
+    std::function<void(int)> deleteTrackCallback;
 };
