@@ -1,8 +1,16 @@
 #pragma once
 #include <JuceHeader.h>
+#include <cmath>
+#include <vector>
 #include "AudioClip.h"
 #include "MidiClip.h"
 #include "NativeDSPPlugins.h"
+
+struct EnvelopePoint
+{
+    double timeSec = 0.0;
+    float value = 1.0f; // 0.0 a 1.5 para volume, -1.0 a 1.0 para pan
+};
 
 class AudioTrack
 {
@@ -23,7 +31,7 @@ public:
     {
         currentSampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
         currentBlockSize = samplesPerBlockExpected > 0 ? samplesPerBlockExpected : 128;
-        
+
         for (auto* vst : vstPlugins)
             vst->prepareToPlay(currentSampleRate, currentBlockSize);
 
@@ -55,6 +63,55 @@ public:
     bool hasActiveEffects() const
     {
         return !vstPlugins.isEmpty() || !nativeEffects.isEmpty();
+    }
+
+    // --- ENVELOPES DE AUTOMAÇÃO DA TRACK ---
+    void addOrUpdateVolumeEnvelopePoint(double timeSec, float val)
+    {
+        const juce::ScopedLock sl(envLock);
+        val = juce::jlimit(0.0f, 1.5f, val);
+        for (auto& pt : volumeEnvelopePoints)
+        {
+            if (std::abs(pt.timeSec - timeSec) < 0.02)
+            {
+                pt.value = val;
+                return;
+            }
+        }
+        volumeEnvelopePoints.push_back({ juce::jmax(0.0, timeSec), val });
+        std::sort(volumeEnvelopePoints.begin(), volumeEnvelopePoints.end(),
+                  [](const EnvelopePoint& a, const EnvelopePoint& b) { return a.timeSec < b.timeSec; });
+    }
+
+    float evaluateVolumeEnvelopeAt(double timeSec) const
+    {
+        const juce::ScopedLock sl(envLock);
+        if (!showVolumeEnvelope || volumeEnvelopePoints.empty())
+            return gain;
+
+        if (timeSec <= volumeEnvelopePoints.front().timeSec)
+            return volumeEnvelopePoints.front().value;
+        if (timeSec >= volumeEnvelopePoints.back().timeSec)
+            return volumeEnvelopePoints.back().value;
+
+        for (size_t i = 0; i + 1 < volumeEnvelopePoints.size(); ++i)
+        {
+            const auto& p0 = volumeEnvelopePoints[i];
+            const auto& p1 = volumeEnvelopePoints[i + 1];
+            if (timeSec >= p0.timeSec && timeSec <= p1.timeSec)
+            {
+                double span = juce::jmax(0.0001, p1.timeSec - p0.timeSec);
+                float t = (float)((timeSec - p0.timeSec) / span);
+                return p0.value + t * (p1.value - p0.value);
+            }
+        }
+        return gain;
+    }
+
+    std::vector<EnvelopePoint> getVolumeEnvelopeCopy() const
+    {
+        const juce::ScopedLock sl(envLock);
+        return volumeEnvelopePoints;
     }
 
     void injectLiveMidiNote(int noteNumber, bool isNoteOn)
@@ -143,6 +200,8 @@ public:
         for (auto* fx : nativeEffects)
             fx->process(trackBuffer);
 
+        float effectiveGain = showVolumeEnvelope ? evaluateVolumeEnvelopeAt(globalPlayheadTime) : gain;
+
         float blockPeak = 0.0f;
         for (int ch = 0; ch < trackBuffer.getNumChannels(); ++ch)
             blockPeak = juce::jmax(blockPeak, trackBuffer.getMagnitude(ch, 0, numSamples));
@@ -153,7 +212,7 @@ public:
             blockPeak = juce::jmax(blockPeak, std::abs(r.getStart()), std::abs(r.getEnd()));
         }
 
-        float scaledPeak = blockPeak * gain;
+        float scaledPeak = blockPeak * effectiveGain;
         float prevPeak = currentPeakLevel.load();
         currentPeakLevel.store(scaledPeak > prevPeak ? scaledPeak : prevPeak * 0.88f);
 
@@ -161,8 +220,8 @@ public:
         if (shouldBeAudible && masterOutput.buffer->getNumChannels() > 0)
         {
             float angle = (pan + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
-            float leftGain  = gain * std::cos(angle);
-            float rightGain = gain * std::sin(angle);
+            float leftGain  = effectiveGain * std::cos(angle);
+            float rightGain = effectiveGain * std::sin(angle);
 
             masterOutput.buffer->addFrom(0, masterOutput.startSample, trackBuffer, 0, 0, numSamples, leftGain);
             if (masterOutput.buffer->getNumChannels() > 1)
@@ -321,6 +380,15 @@ public:
     bool isMonitoring = false;
     bool isMuted = false;
     bool isSoloed = false;
+    bool pinnedToTop = false;
+    bool controlsLocked = false;
+    bool heightLocked = false;
+    bool showVolumeEnvelope = false;
+    bool showPanEnvelope = false;
+    int folderDepth = 0; // 0 = normal, 1 = pasta/agrupada, -1 = fim de pasta
+    int spacerBeforePx = 0;
+    int spacerAfterPx = 0;
+
     float gain = 0.85f;
     float pan = 0.0f;
     std::atomic<float> currentPeakLevel { 0.0f };
@@ -335,6 +403,9 @@ private:
     juce::OwnedArray<MidiClip> midiClips;
     juce::OwnedArray<NativeEffect> nativeEffects;
     juce::OwnedArray<juce::AudioPluginInstance> vstPlugins;
+
+    mutable juce::CriticalSection envLock;
+    std::vector<EnvelopePoint> volumeEnvelopePoints;
 
     juce::AudioBuffer<float> trackBuffer;
     juce::AudioBuffer<float> tempClipBuffer;
