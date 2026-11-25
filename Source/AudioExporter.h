@@ -83,6 +83,7 @@ public:
                 {
                     track->processTrack(channelInfo,
                                         nullptr,
+                                        0,
                                         currentTimeSec,
                                         bpm,
                                         true,
