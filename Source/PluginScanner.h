@@ -58,7 +58,7 @@ public:
 private:
     void run() override
     {
-        setStatus("Escaneando plugins VST / VST2 / VST3...");
+        setStatus("Escaneando plugins VST3...");
 
         if (forceRescan)
         {
@@ -70,7 +70,6 @@ private:
         defaultPaths.addIfNotAlreadyThere(juce::File("C:\\Program Files\\Common Files\\VST3"));
         defaultPaths.addIfNotAlreadyThere(juce::File("C:\\Program Files\\VSTPlugins"));
         defaultPaths.addIfNotAlreadyThere(juce::File("C:\\Program Files\\Steinberg\\VSTPlugins"));
-        defaultPaths.addIfNotAlreadyThere(juce::File("C:\\Program Files\\Common Files\\VST2"));
         defaultPaths.addIfNotAlreadyThere(juce::File("C:\\VSTPlugins"));
 
         juce::File deadMansPedal = cacheFile.getSiblingFile("DeadMansPedal.txt");
@@ -82,7 +81,6 @@ private:
 
             auto* format = formatManager.getFormat(i);
 
-            // Usa uma lista temporária por formato para evitar bloqueios na UI
             juce::KnownPluginList tempList;
             {
                 const juce::ScopedLock sl(listLock);
@@ -111,7 +109,7 @@ private:
 
         saveCacheToDisk();
         scanningActive.store(false);
-        setStatus("Plugins prontos: " + juce::String(getNumScannedPlugins()));
+        setStatus("Plugins VST3 prontos: " + juce::String(getNumScannedPlugins()));
 
         if (onScanFinished)
         {
