@@ -1,16 +1,21 @@
 #pragma once
 #include <JuceHeader.h>
 #include "AudioTrack.h"
+#include "PluginScanner.h"
 
 class TrackRackComponent : public juce::Component
 {
 public:
     TrackRackComponent(AudioTrack& trackRef,
+                       PluginScannerEngine& scannerRef,
                        juce::CriticalSection& engineLock,
-                       std::function<void(AudioTrack&, std::function<void()>)> loadVstCallback)
+                       std::function<void(AudioTrack&, const juce::PluginDescription&, std::function<void()>)> loadDescCallback,
+                       std::function<void(AudioTrack&, std::function<void()>)> browseFileCallback)
         : track(trackRef),
+          scanner(scannerRef),
           audioLock(engineLock),
-          onLoadVst(std::move(loadVstCallback))
+          onLoadFromDesc(std::move(loadDescCallback)),
+          onBrowseFile(std::move(browseFileCallback))
     {
         addAndMakeVisible(addNativeBtn);
         addNativeBtn.setButtonText("+ Plugin Nativo");
@@ -18,16 +23,12 @@ public:
         addNativeBtn.onClick = [this] { showNativeMenu(); };
 
         addAndMakeVisible(addVstBtn);
-        addVstBtn.setButtonText("+ VST3 / VSTi");
+        addVstBtn.setButtonText("+ VST / VST2 / VST3");
         addVstBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff5c4b7d));
-        addVstBtn.onClick = [this]
-        {
-            if (onLoadVst)
-                onLoadVst(track, [this] { rebuildList(); });
-        };
+        addVstBtn.onClick = [this] { showScannedPluginsMenu(); };
 
         rebuildList();
-        setSize(440, 420);
+        setSize(460, 430);
     }
 
     ~TrackRackComponent() override
@@ -43,7 +44,7 @@ public:
         {
             auto* vst = track.getVstPlugins()[i];
             auto* row = rowItems.add(new SlotRow(
-                "[VST3] " + vst->getName(),
+                "[" + vst->getPluginDescription().pluginFormatName + "] " + vst->getName(),
                 false,
                 [this, vst]
                 {
@@ -111,7 +112,7 @@ public:
         if (rowItems.isEmpty())
         {
             g.setColour(juce::Colours::grey);
-            g.drawText("Rack Vazio - Adicione EQ (8..120 bandas), Compressor, Auto-Tune ou VST3",
+            g.drawText("Rack Vazio - Adicione Plugins Nativos ou VST / VST2 / VST3",
                        getLocalBounds().reduced(20), juce::Justification::centred);
         }
     }
@@ -120,8 +121,8 @@ public:
     {
         auto area = getLocalBounds().reduced(10);
         auto topBar = area.removeFromTop(34);
-        addNativeBtn.setBounds(topBar.removeFromLeft(150).reduced(2));
-        addVstBtn.setBounds(topBar.removeFromLeft(150).reduced(2));
+        addNativeBtn.setBounds(topBar.removeFromLeft(155).reduced(2));
+        addVstBtn.setBounds(topBar.removeFromLeft(175).reduced(2));
 
         area.removeFromTop(10);
         for (auto* row : rowItems)
@@ -177,6 +178,60 @@ private:
         juce::TextButton openBtn, bypassBtn, delBtn;
     };
 
+    void showScannedPluginsMenu()
+    {
+        juce::PopupMenu menu;
+        auto types = scanner.getScannedTypesSafe();
+
+        if (types.isEmpty())
+        {
+            menu.addItem(9999, scanner.isScanning() ? "Escaneando pastas... aguarde" : "Nenhum plugin no cache ainda", false);
+        }
+        else
+        {
+            juce::PopupMenu vst2Menu, vst3Menu;
+            for (int i = 0; i < types.size(); ++i)
+            {
+                const auto& desc = types.getReference(i);
+                juce::String label = desc.name + " (" + desc.manufacturerName + ")";
+                if (desc.pluginFormatName.containsIgnoreCase("VST3"))
+                    vst3Menu.addItem(i + 1, label);
+                else
+                    vst2Menu.addItem(i + 1, label);
+            }
+
+            if (vst3Menu.getNumItems() > 0) menu.addSubMenu("Plugins VST3 (" + juce::String(vst3Menu.getNumItems()) + ")", vst3Menu);
+            if (vst2Menu.getNumItems() > 0) menu.addSubMenu("Plugins VST / VST2 (" + juce::String(vst2Menu.getNumItems()) + ")", vst2Menu);
+        }
+
+        menu.addSeparator();
+        menu.addItem(8001, "Procurar arquivo manualmente (.dll ou .vst3)...");
+        menu.addItem(8002, "Re-escanear pastas de plugins agora");
+
+        menu.showMenuAsync(juce::PopupMenu::Options(), [this, types](int res)
+        {
+            if (res == 0) return;
+
+            if (res == 8001)
+            {
+                if (onBrowseFile)
+                    onBrowseFile(track, [this] { rebuildList(); });
+                return;
+            }
+            if (res == 8002)
+            {
+                scanner.startBackgroundAutoScan(true);
+                return;
+            }
+
+            int idx = res - 1;
+            if (idx >= 0 && idx < types.size() && onLoadFromDesc)
+            {
+                onLoadFromDesc(track, types.getReference(idx), [this] { rebuildList(); });
+            }
+        });
+    }
+
     void showNativeMenu()
     {
         juce::PopupMenu menu;
@@ -213,8 +268,10 @@ private:
     }
 
     AudioTrack& track;
+    PluginScannerEngine& scanner;
     juce::CriticalSection& audioLock;
-    std::function<void(AudioTrack&, std::function<void()>)> onLoadVst;
+    std::function<void(AudioTrack&, const juce::PluginDescription&, std::function<void()>)> onLoadFromDesc;
+    std::function<void(AudioTrack&, std::function<void()>)> onBrowseFile;
 
     juce::TextButton addNativeBtn, addVstBtn;
     juce::OwnedArray<SlotRow> rowItems;
@@ -225,15 +282,17 @@ class TrackRackWindow : public juce::DocumentWindow
 {
 public:
     TrackRackWindow(AudioTrack& track,
+                    PluginScannerEngine& scanner,
                     juce::CriticalSection& engineLock,
-                    std::function<void(AudioTrack&, std::function<void()>)> loadVstCallback)
+                    std::function<void(AudioTrack&, const juce::PluginDescription&, std::function<void()>)> loadDescCallback,
+                    std::function<void(AudioTrack&, std::function<void()>)> browseFileCallback)
         : DocumentWindow("Rack de Plugins & Efeitos - " + track.getName(),
                          juce::Colour(0xff1e1e24),
                          DocumentWindow::allButtons)
     {
         setUsingNativeTitleBar(true);
-        setContentOwned(new TrackRackComponent(track, engineLock, std::move(loadVstCallback)), true);
-        centreWithSize(440, 420);
+        setContentOwned(new TrackRackComponent(track, scanner, engineLock, std::move(loadDescCallback), std::move(browseFileCallback)), true);
+        centreWithSize(460, 430);
         setVisible(true);
     }
 
