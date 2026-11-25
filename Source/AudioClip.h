@@ -1,5 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
+#include <cmath>
 
 struct AudioClip
 {
@@ -7,7 +8,7 @@ struct AudioClip
     juce::File audioFile;
     juce::Array<juce::File> takes;
     int activeTakeIndex = 0;
-    
+
     double timelineStart = 0.0;
     double sourceStartOffset = 0.0;
     double duration = 0.0;
