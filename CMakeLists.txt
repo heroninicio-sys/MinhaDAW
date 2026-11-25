@@ -14,15 +14,19 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
-# 2. Baixa headers compatíveis com VST 2.x antes de criar o target
+# 2. Baixa headers VST2 a partir da tag oficial histórica da Steinberg (v3.7.8)
 FetchContent_Declare(
     vst2_headers
-    GIT_REPOSITORY https://github.com/R-Tur/VST2_SDK.git
-    GIT_TAG        master
+    GIT_REPOSITORY https://github.com/steinbergmedia/vst3sdk.git
+    GIT_TAG        v3.7.8_build_34
+    GIT_SHALLOW    TRUE
 )
-FetchContent_MakeAvailable(vst2_headers)
+FetchContent_GetProperties(vst2_headers)
+if(NOT vst2_headers_POPULATED)
+    FetchContent_Populate(vst2_headers)
+endif()
 
-juce_set_vst2_sdk_path(${vst2_headers_SOURCE_DIR})
+juce_set_vst2_sdk_path(${vst2_headers_SOURCE_DIR}/pluginterfaces/vst2.x)
 
 juce_add_gui_app(MinhaDAW
     PRODUCT_NAME "MinhaDAW Studio"
