@@ -15,7 +15,7 @@ jobs:
 
     - name: Configurar CMake e Compilar (Release x64)
       run: |
-        cmake -B build -G "Visual Studio 17 2022" -A x64
+        cmake -B build -DCMAKE_BUILD_TYPE=Release
         cmake --build build --config Release --parallel
 
     - name: Disponibilizar Executável para Download
