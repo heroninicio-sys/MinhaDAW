@@ -82,8 +82,14 @@ public:
         trackRackWindow.reset();
         pianoRollWindow.reset();
         stopTransport();
+      ~MainComponent() override
+    {
+        stopTimer();
+        trackRackWindow.reset();
+        pianoRollWindow.reset();
+        stopTransport();
+        bottomMixer.clearStrips();
         shutdownAudio();
-    }
 
     bool keyPressed(const juce::KeyPress& key) override
     {
