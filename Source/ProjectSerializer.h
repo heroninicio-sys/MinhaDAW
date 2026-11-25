@@ -1,5 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
+#include <vector>
 #include "AudioTrack.h"
 
 struct TimelineRegion
@@ -22,7 +23,7 @@ public:
         const juce::ScopedLock sl(trackLock);
 
         auto* rootObj = new juce::DynamicObject();
-        rootObj->setProperty("version", "1.2");
+        rootObj->setProperty("version", "1.3");
         rootObj->setProperty("bpm", bpm);
 
         juce::Array<juce::var> regionsArr;
@@ -103,7 +104,7 @@ public:
             {
                 auto* vObj = new juce::DynamicObject();
                 vObj->setProperty("path", i < track->vstFilePaths.size() ? track->vstFilePaths[i] : "");
-                
+
                 juce::MemoryBlock stateMem;
                 track->getVstPlugins()[i]->getStateInformation(stateMem);
                 vObj->setProperty("stateBase64", stateMem.toBase64Encoding());
@@ -231,7 +232,7 @@ public:
                         juce::String typeId = fxObj->getProperty("typeId").toString();
                         std::unique_ptr<NativeEffect> fx;
 
-                        if (typeId == "NativeEQ")            fx = std::make_unique<MultiBandEQEffect>(8);
+                        if (typeId == "NativeEQ")            fx = std::make_unique<MultiChannelEQEffect>(16);
                         else if (typeId == "NativeComp")     fx = std::make_unique<CompressorEffect>();
                         else if (typeId == "NativeDist")     fx = std::make_unique<DistortionEffect>();
                         else if (typeId == "NativeAutoTune") fx = std::make_unique<AutoTuneEffect>();
