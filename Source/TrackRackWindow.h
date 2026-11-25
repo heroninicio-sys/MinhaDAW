@@ -28,7 +28,7 @@ public:
             juce::Path valArc;
             valArc.addCentredArc(cx, cy, radius, radius, 0.0f, rotaryStartAngle, toAngle, true);
             g.setColour(ringColour.withAlpha(0.35f));
-            g.strokePath(valArc, juce::PathStrokeType(6.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.strokePath(valArc, juce::PathStrokeType(6.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
             g.setColour(ringColour);
             g.strokePath(valArc, juce::PathStrokeType(2.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         }
@@ -156,8 +156,11 @@ public:
         g.fillRoundedRectangle(b, 8.0f);
 
         bool isActive = powerBtn.getToggleState();
-        g.setColour(isActive ? neonColour.withAlpha(0.65f) : juce::Colour(0xff3a3c48));
-        g.drawRoundedRectangle(b, 8.0f, 1.4f);
+        // Brilho externo neon colorido
+        g.setColour(isActive ? neonColour.withAlpha(0.25f) : juce::Colours::transparentBlack);
+        g.drawRoundedRectangle(b.expanded(1.0f), 9.0f, 3.0f);
+        g.setColour(isActive ? neonColour.withAlpha(0.85f) : juce::Colour(0xff3a3c48));
+        g.drawRoundedRectangle(b, 8.0f, 1.5f);
 
         g.setColour(juce::Colour(0xff4a4d5c));
         float screwOff = 8.0f;
@@ -168,7 +171,7 @@ public:
 
         auto leftBrand = b.withWidth(115.0f).reduced(14.0f, 16.0f);
         g.setColour(isActive ? neonColour : juce::Colours::grey);
-        g.fillRoundedRectangle(leftBrand.getX(), leftBrand.getY(), 4.0f, leftBrand.getHeight(), 2.0f);
+        g.fillRoundedRectangle(leftBrand.getX(), leftBrand.getY(), 4.5f, leftBrand.getHeight(), 2.0f);
 
         g.setFont(juce::FontOptions(24.0f, juce::Font::bold));
         g.drawText(badge, leftBrand.withTrimmedLeft(10.0f).removeFromTop(38), juce::Justification::centred);
@@ -188,8 +191,8 @@ public:
         auto displayRect = juce::Rectangle<float>((float)getWidth() - 155.0f, b.getY() + 38.0f, 138.0f, b.getHeight() - 48.0f);
         g.setColour(juce::Colour(0xff0d0e12));
         g.fillRoundedRectangle(displayRect, 4.0f);
-        g.setColour(neonColour.withAlpha(0.4f));
-        g.drawRoundedRectangle(displayRect, 4.0f, 1.0f);
+        g.setColour(neonColour.withAlpha(0.55f));
+        g.drawRoundedRectangle(displayRect, 4.0f, 1.2f);
 
         int bars = 16;
         float barStep = (displayRect.getWidth() - 12.0f) / (float)bars;
@@ -198,7 +201,7 @@ public:
             float norm = std::exp(-0.16f * (float)i) * (0.6f + 0.4f * std::sin((float)i * 0.9f));
             float bh = norm * (displayRect.getHeight() - 12.0f);
             float bx = displayRect.getX() + 6.0f + (float)i * barStep;
-            g.setColour(isActive ? neonColour.withAlpha(0.85f) : juce::Colours::dimgrey);
+            g.setColour(isActive ? neonColour.withAlpha(0.90f) : juce::Colours::dimgrey);
             g.fillRect(bx, displayRect.getBottom() - 6.0f - bh, juce::jmax(2.0f, barStep - 2.5f), bh);
         }
     }
@@ -282,13 +285,17 @@ public:
     {
         moduleCards.clear(true);
 
+        const juce::Colour vstPalette[] = {
+            juce::Colour(0xff00b4d8), juce::Colour(0xffa855f7), juce::Colour(0xfff59e0b), juce::Colour(0xff10b981)
+        };
+
         for (int i = 0; i < track.getVstPlugins().size(); ++i)
         {
             auto* vst = track.getVstPlugins()[i];
             auto* card = moduleCards.add(new StudioRackModuleCard(
                 "[VST3] " + vst->getName(),
                 vst->getName().substring(0, 2).toUpperCase(),
-                juce::Colour(0xff00b4d8),
+                vstPalette[i % 4],
                 false,
                 [this, vst]
                 {
