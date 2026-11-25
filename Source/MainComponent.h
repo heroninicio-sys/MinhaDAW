@@ -84,6 +84,10 @@ public:
 
         addAndMakeVisible(bottomMixer);
 
+        // Sobreposição visual da janela de inicialização de scan
+        addChildComponent(scanOverlay);
+        pluginScanner.attachOverlay(&scanOverlay);
+
         regions.push_back({ "Intro",    0.0,  8.0,  juce::Colour(0xff2b9348) });
         regions.push_back({ "Verse 1",  8.0,  24.0, juce::Colour(0xff3a86ff) });
         regions.push_back({ "Chorus 1", 24.0, 40.0, juce::Colour(0xff8338ec) });
@@ -97,6 +101,7 @@ public:
         setSize(1366, 740);
         startTimerHz(30);
 
+        // Inicia o Auto-Scan isolado apenas para novos plugins (o que já foi lido vem direto do cache)
         pluginScanner.startBackgroundAutoScan(false);
     }
 
@@ -112,6 +117,9 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override
     {
+        if (pluginScanner.isScanning())
+            return true;
+
         auto ch = juce::CharacterFunctions::toLowerCase(key.getTextCharacter());
         bool ctrl = key.getModifiers().isCtrlDown();
         bool alt  = key.getModifiers().isAltDown();
@@ -324,6 +332,9 @@ public:
     void resized() override
     {
         auto area = getLocalBounds();
+        scanOverlay.setBounds(area);
+        scanOverlay.toFront(false);
+
         auto topBar = area.removeFromTop(48);
 
         timecodeLabel.setBounds(16, 8, 175, 32);
@@ -380,6 +391,7 @@ private:
     std::atomic<float> masterPeakAtomic { 0.0f };
     BottomMixerDock bottomMixer { masterGainAtomic, masterPeakAtomic };
 
+    PluginScanOverlay scanOverlay;
     MetronomeEngine metronome;
     PluginScannerEngine pluginScanner;
     juce::AudioFormatManager audioFormatManager;
@@ -670,6 +682,9 @@ private:
 
         if (showBottomMixer)
             bottomMixer.refreshMetersAndState();
+
+        if (scanOverlay.isVisible())
+            scanOverlay.repaint();
 
         repaint(regionArea);
         repaint(rulerArea);
