@@ -90,13 +90,11 @@ public:
         trackBuffer.clear();
         trackMidiBuffer.clear();
 
-        // 1. Gravação em disco
         if (isArmed && isRecording && threadedWriter != nullptr && hardwareInput != nullptr)
         {
             threadedWriter->write(hardwareInput, numSamples);
         }
 
-        // 2. Som de Retorno (Input Monitoring): escuta a entrada em tempo real pelos plugins
         if (isMonitoring && hardwareInput != nullptr && numInputChannels > 0)
         {
             for (int ch = 0; ch < 2; ++ch)
@@ -107,7 +105,6 @@ public:
             }
         }
 
-        // 3. Reprodução de Clipes de Áudio e MIDI
         if (isGlobalPlaying)
         {
             for (auto* clip : audioClips)
@@ -126,14 +123,12 @@ public:
             }
         }
 
-        // 4. Processamento de Efeitos (VST3 e Nativos DSP)
         for (auto* vst : vstPlugins)
             vst->processBlock(trackBuffer, trackMidiBuffer);
 
         for (auto* fx : nativeEffects)
             fx->process(trackBuffer);
 
-        // 5. Medidor VU
         float blockPeak = 0.0f;
         for (int ch = 0; ch < trackBuffer.getNumChannels(); ++ch)
             blockPeak = juce::jmax(blockPeak, trackBuffer.getMagnitude(ch, 0, numSamples));
@@ -142,7 +137,6 @@ public:
         float prevPeak = currentPeakLevel.load();
         currentPeakLevel.store(scaledPeak > prevPeak ? scaledPeak : prevPeak * 0.88f);
 
-        // 6. Saída para o Master com Pan Estéreo
         bool shouldBeAudible = !isMuted && (!anyTrackSoloed || isSoloed);
         if (shouldBeAudible && masterOutput.buffer->getNumChannels() > 0)
         {
@@ -262,7 +256,7 @@ public:
     juce::OwnedArray<juce::AudioPluginInstance>& getVstPlugins() { return vstPlugins; }
 
     bool isArmed = false;
-    bool isMonitoring = false; // Som de retorno ativo/inativo
+    bool isMonitoring = false;
     bool isMuted = false;
     bool isSoloed = false;
     float gain = 0.85f;
