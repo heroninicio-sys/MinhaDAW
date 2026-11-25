@@ -88,7 +88,6 @@ public:
 
         addAndMakeVisible(bottomMixer);
 
-        // Tela de Boas-Vindas (inicia o scan somente após o usuário fechar esta tela)
         welcomeOverlay = std::make_unique<WelcomeOverlayComponent>(
             [this]
             {
@@ -116,7 +115,6 @@ public:
         setSize(1366, 740);
         startTimerHz(30);
 
-        // Inicializa o motor de áudio com buffer estável de 1024 samples para evitar congelamentos
         juce::MessageManager::callAsync([this]
         {
             juce::AudioDeviceManager::AudioDeviceSetup setup;
