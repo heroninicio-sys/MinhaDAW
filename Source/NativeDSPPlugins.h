@@ -18,9 +18,6 @@ public:
     bool bypassed = false;
 };
 
-// ============================================================================
-// 1. EQUALIZADOR MULTI-BANDA (Múltiplos de 8: 8, 16, 24 ... até 120 canais)
-// ============================================================================
 class MultiBandEQEffect : public NativeEffect
 {
 public:
@@ -145,9 +142,6 @@ private:
     std::vector<juce::dsp::IIR::Filter<float>> filters[2];
 };
 
-// ============================================================================
-// 2. COMPRESSOR DINÂMICO
-// ============================================================================
 class CompressorEffect : public NativeEffect
 {
 public:
@@ -234,9 +228,6 @@ private:
     float envelope = 0.0f;
 };
 
-// ============================================================================
-// 3. DISTORÇÃO / OVERDRIVE
-// ============================================================================
 class DistortionEffect : public NativeEffect
 {
 public:
@@ -288,9 +279,6 @@ public:
     std::unique_ptr<juce::Component> createEditor() override;
 };
 
-// ============================================================================
-// 4. AUTO-TUNE VOCAL
-// ============================================================================
 class AutoTuneEffect : public NativeEffect
 {
 public:
@@ -441,9 +429,6 @@ private:
     float currentPitchRatio = 1.0f;
 };
 
-// ============================================================================
-// 5. REVERB ESTÉREO
-// ============================================================================
 class ReverbEffect : public NativeEffect
 {
 public:
@@ -508,9 +493,6 @@ private:
     juce::Reverb::Parameters params;
 };
 
-// ============================================================================
-// 6. DELAY ESTÉREO
-// ============================================================================
 class DelayEffect : public NativeEffect
 {
 public:
@@ -583,9 +565,6 @@ private:
     int writePos = 0;
 };
 
-// ============================================================================
-// INTERFACES GRÁFICAS LEVES PARA OS PLUGINS NATIVOS
-// ============================================================================
 class MultiBandEQEditor : public juce::Component
 {
 public:
