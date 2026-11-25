@@ -161,8 +161,9 @@ public:
                     if (outCh == 1)
                     {
                         juce::AudioBuffer<float> monoBuf(1, samplesThisBlock);
-                        monoBuf.copyFrom(0, 0, mixBuffer, 0, 0, samplesThisBlock, 0.5f);
-                        monoBuf.addFrom(0, 0, mixBuffer, 1, 0, samplesThisBlock, 0.5f);
+                        monoBuf.copyFrom(0, 0, mixBuffer, 0, 0, samplesThisBlock);
+                        monoBuf.addFrom(0, 0, mixBuffer, 1, 0, samplesThisBlock);
+                        monoBuf.applyGain(0, 0, samplesThisBlock, 0.5f);
                         writer->writeFromAudioSampleBuffer(monoBuf, 0, samplesThisBlock);
                     }
                     else
