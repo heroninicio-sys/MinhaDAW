@@ -52,6 +52,11 @@ public:
         vstPlugins.add(std::move(vst));
     }
 
+    bool hasActiveEffects() const
+    {
+        return !vstPlugins.isEmpty() || !nativeEffects.isEmpty();
+    }
+
     void injectLiveMidiNote(int noteNumber, bool isNoteOn)
     {
         const juce::ScopedLock sl(liveMidiLock);
@@ -69,6 +74,7 @@ public:
 
     void processTrack(const juce::AudioSourceChannelInfo& masterOutput,
                       const float* const* hardwareInput,
+                      int numInputChannels,
                       double globalPlayheadTime,
                       double bpm,
                       bool isGlobalPlaying,
@@ -84,11 +90,24 @@ public:
         trackBuffer.clear();
         trackMidiBuffer.clear();
 
+        // 1. Gravação em disco
         if (isArmed && isRecording && threadedWriter != nullptr && hardwareInput != nullptr)
         {
             threadedWriter->write(hardwareInput, numSamples);
         }
 
+        // 2. Som de Retorno (Input Monitoring): escuta a entrada em tempo real pelos plugins
+        if (isMonitoring && hardwareInput != nullptr && numInputChannels > 0)
+        {
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                int inCh = ch % numInputChannels;
+                if (hardwareInput[inCh] != nullptr)
+                    trackBuffer.addFrom(ch, 0, hardwareInput[inCh], numSamples);
+            }
+        }
+
+        // 3. Reprodução de Clipes de Áudio e MIDI
         if (isGlobalPlaying)
         {
             for (auto* clip : audioClips)
@@ -107,20 +126,35 @@ public:
             }
         }
 
+        // 4. Processamento de Efeitos (VST3 e Nativos DSP)
         for (auto* vst : vstPlugins)
             vst->processBlock(trackBuffer, trackMidiBuffer);
 
         for (auto* fx : nativeEffects)
             fx->process(trackBuffer);
 
+        // 5. Medidor VU
+        float blockPeak = 0.0f;
+        for (int ch = 0; ch < trackBuffer.getNumChannels(); ++ch)
+            blockPeak = juce::jmax(blockPeak, trackBuffer.getMagnitude(ch, 0, numSamples));
+
+        float scaledPeak = blockPeak * gain;
+        float prevPeak = currentPeakLevel.load();
+        currentPeakLevel.store(scaledPeak > prevPeak ? scaledPeak : prevPeak * 0.88f);
+
+        // 6. Saída para o Master com Pan Estéreo
         bool shouldBeAudible = !isMuted && (!anyTrackSoloed || isSoloed);
-        if (shouldBeAudible)
+        if (shouldBeAudible && masterOutput.buffer->getNumChannels() > 0)
         {
-            for (int ch = 0; ch < masterOutput.buffer->getNumChannels(); ++ch)
+            float angle = (pan + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
+            float leftGain  = gain * std::cos(angle);
+            float rightGain = gain * std::sin(angle);
+
+            masterOutput.buffer->addFrom(0, masterOutput.startSample, trackBuffer, 0, 0, numSamples, leftGain);
+            if (masterOutput.buffer->getNumChannels() > 1)
             {
-                int srcCh = ch % trackBuffer.getNumChannels();
-                masterOutput.buffer->addFrom(ch, masterOutput.startSample,
-                                             trackBuffer, srcCh, 0, numSamples, gain);
+                int srcRight = trackBuffer.getNumChannels() > 1 ? 1 : 0;
+                masterOutput.buffer->addFrom(1, masterOutput.startSample, trackBuffer, srcRight, 0, numSamples, rightGain);
             }
         }
     }
@@ -228,9 +262,12 @@ public:
     juce::OwnedArray<juce::AudioPluginInstance>& getVstPlugins() { return vstPlugins; }
 
     bool isArmed = false;
+    bool isMonitoring = false; // Som de retorno ativo/inativo
     bool isMuted = false;
     bool isSoloed = false;
     float gain = 0.85f;
+    float pan = 0.0f;
+    std::atomic<float> currentPeakLevel { 0.0f };
     juce::StringArray vstFilePaths;
 
 private:
