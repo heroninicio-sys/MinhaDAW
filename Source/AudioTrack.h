@@ -21,8 +21,8 @@ public:
 
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate)
     {
-        currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
-        currentBlockSize = samplesPerBlockExpected > 0 ? samplesPerBlockExpected : 512;
+        currentSampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
+        currentBlockSize = samplesPerBlockExpected > 0 ? samplesPerBlockExpected : 128;
         
         for (auto* vst : vstPlugins)
             vst->prepareToPlay(currentSampleRate, currentBlockSize);
@@ -90,9 +90,23 @@ public:
         trackBuffer.clear();
         trackMidiBuffer.clear();
 
-        if (isArmed && isRecording && threadedWriter != nullptr && hardwareInput != nullptr)
+        if (isArmed && isRecording.load() && threadedWriter != nullptr && hardwareInput != nullptr && numInputChannels > 0)
         {
             threadedWriter->write(hardwareInput, numSamples);
+
+            float inPeak = 0.0f;
+            for (int ch = 0; ch < numInputChannels; ++ch)
+            {
+                if (hardwareInput[ch] != nullptr)
+                {
+                    auto range = juce::FloatVectorOperations::findMinAndMax(hardwareInput[ch], numSamples);
+                    inPeak = juce::jmax(inPeak, std::abs(range.getStart()), std::abs(range.getEnd()));
+                }
+            }
+
+            liveRecordSamplesWritten += numSamples;
+            const juce::ScopedLock rl(liveWaveLock);
+            liveRecordPeaks.push_back(inPeak);
         }
 
         if (isMonitoring && hardwareInput != nullptr && numInputChannels > 0)
@@ -101,7 +115,7 @@ public:
             {
                 int inCh = ch % numInputChannels;
                 if (hardwareInput[inCh] != nullptr)
-                    trackBuffer.addFrom(ch, 0, hardwareInput[inCh], numSamples);
+                    juce::FloatVectorOperations::add(trackBuffer.getWritePointer(ch), hardwareInput[inCh], numSamples);
             }
         }
 
@@ -132,6 +146,12 @@ public:
         float blockPeak = 0.0f;
         for (int ch = 0; ch < trackBuffer.getNumChannels(); ++ch)
             blockPeak = juce::jmax(blockPeak, trackBuffer.getMagnitude(ch, 0, numSamples));
+
+        if (isRecording.load() && hardwareInput != nullptr && numInputChannels > 0)
+        {
+            auto r = juce::FloatVectorOperations::findMinAndMax(hardwareInput[0], numSamples);
+            blockPeak = juce::jmax(blockPeak, std::abs(r.getStart()), std::abs(r.getEnd()));
+        }
 
         float scaledPeak = blockPeak * gain;
         float prevPeak = currentPeakLevel.load();
@@ -204,13 +224,28 @@ public:
     void removeClip(AudioClip* clipToRemove) { audioClips.removeObject(clipToRemove, true); }
     void removeMidiClip(MidiClip* clipToRemove) { midiClips.removeObject(clipToRemove, true); }
 
-    void startRecording(const juce::File& targetFile, double recordStartTimelinePos)
+    bool startRecording(const juce::File& targetFile, double recordStartTimelinePos, double roundTripLatencySec = 0.0)
     {
-        if (!isArmed) return;
+        if (!isArmed) return false;
         stopRecording(recordStartTimelinePos);
-        
+
+        if (!backgroundThread.isThreadRunning())
+            backgroundThread.startThread();
+
+        if (currentSampleRate <= 0.0)
+            currentSampleRate = 48000.0;
+
+        targetFile.getParentDirectory().createDirectory();
         recordedFile = targetFile;
-        recordingStartPos = recordStartTimelinePos;
+        recordingStartPos = juce::jmax(0.0, recordStartTimelinePos - roundTripLatencySec);
+        pendingLatencyTrimSec = (recordStartTimelinePos < roundTripLatencySec) ? (roundTripLatencySec - recordStartTimelinePos) : 0.0;
+        liveRecordSamplesWritten = 0;
+
+        {
+            const juce::ScopedLock rl(liveWaveLock);
+            liveRecordPeaks.clear();
+            liveRecordPeaks.reserve(16384);
+        }
 
         if (auto fileStream = std::unique_ptr<juce::FileOutputStream>(recordedFile.createOutputStream()))
         {
@@ -218,21 +253,48 @@ public:
             if (auto* writer = wavFormat.createWriterFor(fileStream.get(), currentSampleRate, 2, 24, {}, 0))
             {
                 fileStream.release();
-                threadedWriter.reset(new juce::AudioFormatWriter::ThreadedWriter(writer, backgroundThread, 32768));
-                isRecording = true;
+                threadedWriter.reset(new juce::AudioFormatWriter::ThreadedWriter(writer, backgroundThread, 65536));
+                isRecording.store(true);
+                return true;
             }
         }
+        return false;
     }
 
     void stopRecording(double)
     {
-        if (isRecording)
+        if (isRecording.load())
         {
-            isRecording = false;
+            isRecording.store(false);
             threadedWriter.reset();
-            if (recordedFile.existsAsFile())
-                addClipFromFile(recordedFile, recordingStartPos);
+
+            if (recordedFile.existsAsFile() && recordedFile.getSize() > 44)
+            {
+                auto clip = std::make_unique<AudioClip>(recordedFile, formatManager, recordingStartPos);
+                if (clip->duration > pendingLatencyTrimSec + 0.02)
+                {
+                    clip->sourceStartOffset = pendingLatencyTrimSec;
+                    clip->duration -= pendingLatencyTrimSec;
+                    audioClips.add(std::move(clip));
+                }
+            }
+
+            const juce::ScopedLock rl(liveWaveLock);
+            liveRecordPeaks.clear();
         }
+    }
+
+    bool isCurrentlyRecording() const { return isRecording.load(); }
+    double getLiveRecordingStartSec() const { return recordingStartPos; }
+    double getLiveRecordingDurationSec() const
+    {
+        return (currentSampleRate > 0.0) ? ((double)liveRecordSamplesWritten / currentSampleRate) : 0.0;
+    }
+
+    std::vector<float> getLiveRecordingPeaksSnapshot() const
+    {
+        const juce::ScopedLock rl(liveWaveLock);
+        return liveRecordPeaks;
     }
 
     double getMaxTimelineEnd(double bpm) const
@@ -281,11 +343,16 @@ private:
     juce::CriticalSection liveMidiLock;
     juce::MidiBuffer liveMidiBuffer;
 
+    mutable juce::CriticalSection liveWaveLock;
+    std::vector<float> liveRecordPeaks;
+    juce::int64 liveRecordSamplesWritten = 0;
+
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
     juce::File recordedFile;
     double recordingStartPos = 0.0;
-    bool isRecording = false;
+    double pendingLatencyTrimSec = 0.0;
+    std::atomic<bool> isRecording { false };
 
-    double currentSampleRate = 44100.0;
-    int currentBlockSize = 512;
+    double currentSampleRate = 48000.0;
+    int currentBlockSize = 128;
 };
