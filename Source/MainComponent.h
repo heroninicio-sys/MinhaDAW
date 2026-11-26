@@ -806,118 +806,6 @@ private:
         return 0.0;
     }
 
-    void moveTrackBetweenPositions(int fromIdx, int toIdx)
-    {
-        if (fromIdx < 0 || fromIdx >= tracks.size()) return;
-        int clampedTo = juce::jlimit(0, tracks.size() - 1, toIdx);
-        if (fromIdx == clampedTo) return;
-
-        {
-            const juce::ScopedLock sl(trackLock);
-            tracks.move(fromIdx, clampedTo);
-        }
-        rebuildTrackRowsFromModel();
-        rebuildMixerDock();
-        repaint();
-    }
-
-    void openTrackContextMenu(int trackIdx, TrackRowComponent& rowComp)
-    {
-        if (trackIdx < 0 || trackIdx >= tracks.size()) return;
-        AudioTrack* t = tracks[trackIdx];
-
-        juce::PopupMenu spacerSub;
-        spacerSub.addItem(101, "Insert spacer before tracks");
-        spacerSub.addItem(102, "Insert spacer after tracks");
-        spacerSub.addItem(103, "Remove spacers");
-
-        juce::PopupMenu folderSub;
-        folderSub.addItem(201, "Normal track");
-        folderSub.addItem(202, "Folder parent (agrupar abaixo)");
-        folderSub.addItem(203, "End of folder");
-
-        juce::PopupMenu envSub;
-        envSub.addItem(301, t->showVolumeEnvelope ? "Ocultar Envelope de Volume" : "Mostrar Envelope de Volume");
-        envSub.addItem(302, "Inserir Ponto de Envelope no Cursor");
-
-        juce::PopupMenu menu;
-        menu.addItem(1, t->pinnedToTop ? "Unpin track from top" : "Pin tracks to top of arrange view");
-        menu.addSubMenu("Visual spacer", spacerSub);
-        menu.addSeparator();
-        menu.addItem(2, "Insert new track\tCtrl+T");
-        menu.addItem(3, "Insert new track as first track");
-        menu.addItem(4, "Insert new track at end of track list");
-        menu.addSeparator();
-        menu.addItem(5, "Remove tracks");
-        menu.addItem(6, "Duplicate tracks");
-        menu.addSubMenu("Move tracks to folder", folderSub);
-        menu.addSeparator();
-        menu.addItem(7, "Lock track controls", true, t->controlsLocked);
-        menu.addItem(8, "Lock track height", true, t->heightLocked);
-        menu.addItem(9, "Lock track items", true, itemsLocked);
-        menu.addItem(10, "Automatic record-arm when track selected", true, t->isArmed);
-        menu.addSeparator();
-        menu.addSubMenu("Envelopes", envSub);
-
-        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&rowComp), [this, trackIdx](int res)
-        {
-            if (res == 0 || trackIdx < 0 || trackIdx >= tracks.size()) return;
-            AudioTrack* tr = tracks[trackIdx];
-
-            switch (res)
-            {
-                case 1: tr->pinnedToTop = !tr->pinnedToTop; break;
-                case 2: addNewTrack(); break;
-                case 3:
-                {
-                    const juce::ScopedLock sl(trackLock);
-                    auto* n = new AudioTrack("Track 1", audioFormatManager, backgroundThread);
-                    n->prepareToPlay(currentBlockSize.load(), currentSampleRate.load());
-                    tracks.insert(0, n);
-                    rebuildTrackRowsFromModel();
-                    rebuildMixerDock();
-                    break;
-                }
-                case 4: addNewTrack(); break;
-                case 5: deleteTrackAtIndex(trackIdx); break;
-                case 6:
-                {
-                    const juce::ScopedLock sl(trackLock);
-                    auto* dup = new AudioTrack(tr->getName() + " (Copy)", audioFormatManager, backgroundThread);
-                    dup->prepareToPlay(currentBlockSize.load(), currentSampleRate.load());
-                    dup->gain = tr->gain;
-                    dup->pan = tr->pan;
-                    tracks.insert(trackIdx + 1, dup);
-                    rebuildTrackRowsFromModel();
-                    rebuildMixerDock();
-                    break;
-                }
-                case 7: tr->controlsLocked = !tr->controlsLocked; break;
-                case 8: tr->heightLocked = !tr->heightLocked; break;
-                case 9: itemsLocked = !itemsLocked; updateGridParameters(); break;
-                case 10: tr->isArmed = !tr->isArmed; rebuildTrackRowsFromModel(); break;
-                case 101: tr->spacerBeforePx = 18; layoutTracks(); break;
-                case 102: tr->spacerAfterPx = 18; layoutTracks(); break;
-                case 103: tr->spacerBeforePx = 0; tr->spacerAfterPx = 0; layoutTracks(); break;
-                case 201: tr->folderDepth = 0; repaint(); break;
-                case 202: tr->folderDepth = 1; repaint(); break;
-                case 203: tr->folderDepth = -1; repaint(); break;
-                case 301:
-                    tr->showVolumeEnvelope = !tr->showVolumeEnvelope;
-                    if (tr->showVolumeEnvelope && tr->getVolumeEnvelopeCopy().empty())
-                        tr->addOrUpdateVolumeEnvelopePoint(0.0, tr->gain);
-                    repaint();
-                    break;
-                case 302:
-                    tr->showVolumeEnvelope = true;
-                    tr->addOrUpdateVolumeEnvelopePoint(globalTimelineSeconds.load(), tr->gain);
-                    repaint();
-                    break;
-                default: break;
-            }
-        });
-    }
-
     void createNewCleanProject()
     {
         stopTransport();
@@ -984,9 +872,7 @@ private:
                 [this](AudioTrack& tr, MidiClip& mc) { openPianoRoll(tr, mc); },
                 [this](double newPos) { seekTo(newPos); },
                 [this](TrackRowComponent* r, AudioClip* ac, MidiClip* mc) { handleSelection(r, ac, mc); },
-                [this](int delIdx) { deleteTrackAtIndex(delIdx); },
-                [this](int fromIdx, int toIdx) { moveTrackBetweenPositions(fromIdx, toIdx); },
-                [this](int trIdx, TrackRowComponent& rComp) { openTrackContextMenu(trIdx, rComp); }
+                [this](int delIdx) { deleteTrackAtIndex(delIdx); }
             ));
             row->onTrackStateChanged = [this] { bottomMixer.refreshMetersAndState(); };
             row->setPixelsPerSecond(pixelsPerSecond);
@@ -1134,18 +1020,13 @@ private:
 
     void layoutTracks()
     {
-        int curY = 0;
-        for (int i = 0; i < trackRows.size(); ++i)
-        {
-            auto& tr = trackRows[i]->getTrack();
-            curY += tr.spacerBeforePx;
-            trackRows[i]->setBounds(0, curY, juce::jmax(0, juce::jmax(tracksViewport.getWidth() - 12, (int)(300.0 * pixelsPerSecond) + 300)), trackRowHeight);
-            curY += trackRowHeight + tr.spacerAfterPx;
-        }
-
-        int totalHeight = juce::jmax(0, juce::jmax(tracksViewport.getHeight(), curY));
-        int totalWidth  = juce::jmax(0, juce::jmax(tracksViewport.getWidth() - 12, (int)(300.0 * pixelsPerSecond) + 300));
+        const int rowCount = trackRows.size();
+        const int totalHeight = juce::jmax(0, juce::jmax(tracksViewport.getHeight(), rowCount * trackRowHeight));
+        const int totalWidth  = juce::jmax(0, juce::jmax(tracksViewport.getWidth() - 12, (int)(300.0 * pixelsPerSecond) + 300));
         tracksContainer.setSize(totalWidth, totalHeight);
+
+        for (int i = 0; i < rowCount; ++i)
+            trackRows[i]->setBounds(0, i * trackRowHeight, totalWidth, trackRowHeight);
     }
 
     void startPlayback()
@@ -1576,3 +1457,6 @@ private:
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
+```[cite: 39, 41]
+
+Faça commit desse arquivo no GitHub e rode novamente o workflow para confirmar que o **Build Release** conclui sem erros[cite: 41].
