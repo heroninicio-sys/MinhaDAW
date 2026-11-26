@@ -1,12 +1,13 @@
 #pragma once
 #include <JuceHeader.h>
+#include <atomic>
 #include <cmath>
 
 class MetronomeEngine
 {
 public:
-    bool enabled = false;
-    float volume = 0.45f;
+    std::atomic<bool> enabled { false };
+    std::atomic<float> volume { 0.45f };
 
     void prepare(double sr)
     {
@@ -25,10 +26,11 @@ public:
 
     void process(juce::AudioBuffer<float>& outputBuffer, double blockStartSec, double bpm, bool isPlaying)
     {
-        if (!enabled || !isPlaying || bpm <= 0.0 || sampleRate <= 0.0)
+        if (!enabled.load() || !isPlaying || bpm <= 0.0 || sampleRate <= 0.0)
             return;
 
         const int numSamples = outputBuffer.getNumSamples();
+        const float clickVolume = volume.load();
         const double secPerBeat = 60.0 / bpm;
 
         for (int i = 0; i < numSamples; ++i)
@@ -49,7 +51,7 @@ public:
             if (clickSamplesRemaining > 0)
             {
                 double env = (double)clickSamplesRemaining / (double)juce::jmax(1, totalClickSamples);
-                float sample = (float)(std::sin(phase * 2.0 * juce::MathConstants<double>::pi) * env * volume);
+                float sample = (float)(std::sin(phase * 2.0 * juce::MathConstants<double>::pi) * env * clickVolume);
 
                 for (int ch = 0; ch < outputBuffer.getNumChannels(); ++ch)
                     outputBuffer.addSample(ch, i, sample);

@@ -19,7 +19,11 @@ struct AudioClip
     float clipGain = 1.0f;
 
     std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
+    std::unique_ptr<juce::ResamplingAudioSource> resamplingSource;
     double fileSampleRate = 44100.0;
+    int sourceNumChannels = 2;
+    double preparedOutputRate = 0.0;
+    int preparedBlockSize = 0;
 
     AudioClip(const juce::File& file, juce::AudioFormatManager& formatManager, double startPosOnTimeline = 0.0)
         : id(juce::Uuid().toString()), audioFile(file), timelineStart(startPosOnTimeline)
@@ -32,15 +36,37 @@ struct AudioClip
     {
         if (auto* reader = formatManager.createReaderFor(file))
         {
+            resamplingSource.reset();
+            readerSource.reset();
             audioFile = file;
             fileSampleRate = reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
+            sourceNumChannels = (int)reader->numChannels;
             totalFileLength = (double)reader->lengthInSamples / fileSampleRate;
             if (resetDuration)
                 duration = totalFileLength;
             else
                 duration = juce::jmin(duration, totalFileLength);
             readerSource = std::make_unique<juce::AudioFormatReaderSource>(reader, true);
+            resamplingSource = std::make_unique<juce::ResamplingAudioSource>(readerSource.get(), false, 2);
+            if (preparedOutputRate > 0.0)
+                prepareToPlay(preparedBlockSize, preparedOutputRate);
         }
+    }
+
+    void prepareToPlay(int samplesPerBlock, double outputSampleRate)
+    {
+        if (resamplingSource == nullptr || outputSampleRate <= 0.0)
+            return;
+        preparedBlockSize = juce::jmax(1, samplesPerBlock);
+        preparedOutputRate = outputSampleRate;
+        resamplingSource->prepareToPlay(preparedBlockSize, preparedOutputRate);
+        resamplingSource->setResamplingRatio(fileSampleRate / preparedOutputRate);
+    }
+
+    void releaseResources()
+    {
+        if (resamplingSource != nullptr)
+            resamplingSource->releaseResources();
     }
 
     void cycleNextTake(juce::AudioFormatManager& formatManager)
@@ -128,11 +154,20 @@ struct AudioClip
         double fileReadTime   = sourceStartOffset + timeInsideClip;
         juce::int64 readPosSamples = (juce::int64)(fileReadTime * fileSampleRate);
 
+        if (resamplingSource == nullptr)
+            return;
+
+        if (preparedOutputRate != sampleRate || preparedBlockSize < numSamples)
+            prepareToPlay(numSamples, sampleRate);
+
         readerSource->setNextReadPosition(readPosSamples);
+        resamplingSource->flushBuffers();
 
         tempClipBuffer.clear();
         juce::AudioSourceChannelInfo info(&tempClipBuffer, 0, samplesToRead);
-        readerSource->getNextAudioBlock(info);
+        resamplingSource->getNextAudioBlock(info);
+        if (sourceNumChannels == 1 && tempClipBuffer.getNumChannels() > 1)
+            tempClipBuffer.copyFrom(1, 0, tempClipBuffer, 0, 0, samplesToRead);
 
         for (int i = 0; i < samplesToRead; ++i)
         {

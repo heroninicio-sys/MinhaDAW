@@ -6,7 +6,7 @@
 class StudioKnobLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    explicit StudioKnobLookAndFeel(juce::Colour neonCol) : ringColour(neonCol) {}
+    StudioKnobLookAndFeel(juce::Colour neonCol) : ringColour(neonCol) {}
 
     void drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height,
                           float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
@@ -150,15 +150,16 @@ public:
     {
         auto b = getLocalBounds().toFloat().reduced(2.0f);
 
-        juce::ColourGradient chassis(juce::Colour(0xff23252e), 0.0f, b.getY(),
-                                     juce::Colour(0xff14151a), 0.0f, b.getBottom(), false);
+        juce::ColourGradient chassis(juce::Colour(0xff172638), 0.0f, b.getY(),
+                                     juce::Colour(0xff0c1623), 0.0f, b.getBottom(), false);
         g.setGradientFill(chassis);
         g.fillRoundedRectangle(b, 8.0f);
 
         bool isActive = powerBtn.getToggleState();
+        // Brilho externo neon colorido
         g.setColour(isActive ? neonColour.withAlpha(0.25f) : juce::Colours::transparentBlack);
         g.drawRoundedRectangle(b.expanded(1.0f), 9.0f, 3.0f);
-        g.setColour(isActive ? neonColour.withAlpha(0.85f) : juce::Colour(0xff3a3c48));
+        g.setColour(isActive ? neonColour.withAlpha(0.85f) : juce::Colour(0xff2a4057));
         g.drawRoundedRectangle(b, 8.0f, 1.5f);
 
         g.setColour(juce::Colour(0xff4a4d5c));
@@ -180,7 +181,7 @@ public:
         g.drawFittedText(title, leftBrand.withTrimmedLeft(10.0f).withTrimmedTop(40).toNearestInt(),
                          juce::Justification::centred, 2);
 
-        g.setColour(juce::Colour(0xff323440));
+        g.setColour(juce::Colour(0xff2a4057));
         g.drawVerticalLine(122, b.getY() + 10.0f, b.getBottom() - 10.0f);
 
         g.setColour(juce::Colours::white);
@@ -188,7 +189,7 @@ public:
         g.drawText(title, 134, (int)b.getY() + 8, getWidth() - 320, 22, juce::Justification::centredLeft, true);
 
         auto displayRect = juce::Rectangle<float>((float)getWidth() - 155.0f, b.getY() + 38.0f, 138.0f, b.getHeight() - 48.0f);
-        g.setColour(juce::Colour(0xff0d0e12));
+        g.setColour(juce::Colour(0xff07111d));
         g.fillRoundedRectangle(displayRect, 4.0f);
         g.setColour(neonColour.withAlpha(0.55f));
         g.drawRoundedRectangle(displayRect, 4.0f, 1.2f);
@@ -282,10 +283,11 @@ public:
 
     void rebuildList()
     {
+        const juce::ScopedLock sl(audioLock);
         moduleCards.clear(true);
 
         const juce::Colour vstPalette[] = {
-            juce::Colour(0xff00b4d8), juce::Colour(0xffa855f7), juce::Colour(0xfff59e0b), juce::Colour(0xff10b981)
+            juce::Colour(0xff16c7c9), juce::Colour(0xffa78bfa), juce::Colour(0xfff59e42), juce::Colour(0xff22c58b)
         };
 
         for (int i = 0; i < track.getVstPlugins().size(); ++i)
@@ -295,7 +297,7 @@ public:
                 "[VST3] " + vst->getName(),
                 vst->getName().substring(0, 2).toUpperCase(),
                 vstPalette[i % 4],
-                false,
+                track.isVstPluginBypassed(i),
                 [this, vst]
                 {
                     if (vst->hasEditor())
@@ -305,17 +307,30 @@ public:
                         win->setVisible(true);
                     }
                 },
-                [](bool) {},
-                [this, i]
+                [safeThis = juce::Component::SafePointer<TrackRackComponent>(this), vst](bool shouldBypass)
                 {
-                    activeWindows.clear(true);
+                    if (safeThis == nullptr) return;
+                    const juce::ScopedLock sl(safeThis->audioLock);
+                    const int currentIndex = safeThis->track.getVstPlugins().indexOf(vst);
+                    if (currentIndex < 0) return;
+                    safeThis->track.setVstPluginBypassed(currentIndex, shouldBypass);
+                },
+                [safeThis = juce::Component::SafePointer<TrackRackComponent>(this), vst]
+                {
+                    juce::MessageManager::callAsync([safeThis, vst]
                     {
-                        const juce::ScopedLock sl(audioLock);
-                        track.getVstPlugins().remove(i, true);
-                        if (i < track.vstFilePaths.size())
-                            track.vstFilePaths.remove(i);
-                    }
-                    rebuildList();
+                        if (safeThis == nullptr) return;
+                        safeThis->activeWindows.clear(true);
+                        {
+                            const juce::ScopedLock sl(safeThis->audioLock);
+                            const int currentIndex = safeThis->track.getVstPlugins().indexOf(vst);
+                            if (currentIndex >= 0)
+                            {
+                                safeThis->track.removeVstPlugin(currentIndex);
+                            }
+                        }
+                        safeThis->rebuildList();
+                    });
                 }
             ));
 
@@ -337,18 +352,18 @@ public:
             juce::Colour neon = juce::Colour(0xff9d4edd);
             juce::String badge = "FX";
 
-            if (fx->getTypeId() == "NativeEQ")            { neon = juce::Colour(0xff00f5d4); badge = "EQ"; }
-            else if (fx->getTypeId() == "NativeComp")     { neon = juce::Colour(0xff38b000); badge = "CP"; }
-            else if (fx->getTypeId() == "NativeDist")     { neon = juce::Colour(0xffe63946); badge = "DS"; }
-            else if (fx->getTypeId() == "NativeAutoTune") { neon = juce::Colour(0xff3a86ff); badge = "AT"; }
+            if (fx->getTypeId() == "NativeEQ")            { neon = juce::Colour(0xff16d8e8); badge = "EQ"; }
+            else if (fx->getTypeId() == "NativeComp")     { neon = juce::Colour(0xff22c58b); badge = "CP"; }
+            else if (fx->getTypeId() == "NativeDist")     { neon = juce::Colour(0xfff06b8b); badge = "DS"; }
+            else if (fx->getTypeId() == "NativeAutoTune") { neon = juce::Colour(0xff398bff); badge = "AT"; }
             else if (fx->getTypeId() == "NativeReverb")   { neon = juce::Colour(0xff9d4edd); badge = "RV"; }
-            else if (fx->getTypeId() == "NativeDelay")    { neon = juce::Colour(0xfff77f00); badge = "DL"; }
+            else if (fx->getTypeId() == "NativeDelay")    { neon = juce::Colour(0xfff59e42); badge = "DL"; }
 
             auto* card = moduleCards.add(new StudioRackModuleCard(
                 fx->getName(),
                 badge,
                 neon,
-                fx->bypassed,
+                fx->bypassed.load(),
                 [this, fx]
                 {
                     auto editor = fx->createEditor();
@@ -360,15 +375,20 @@ public:
                         win->setVisible(true);
                     }
                 },
-                [fx](bool isBypassed) { fx->bypassed = isBypassed; },
-                [this, i]
+                [fx](bool isBypassed) { fx->bypassed.store(isBypassed); },
+                [safeThis = juce::Component::SafePointer<TrackRackComponent>(this), i]
                 {
-                    activeWindows.clear(true);
+                    juce::MessageManager::callAsync([safeThis, i]
                     {
-                        const juce::ScopedLock sl(audioLock);
-                        track.getNativeEffects().remove(i, true);
-                    }
-                    rebuildList();
+                        if (safeThis == nullptr) return;
+                        safeThis->activeWindows.clear(true);
+                        {
+                            const juce::ScopedLock sl(safeThis->audioLock);
+                            if (i < safeThis->track.getNativeEffects().size())
+                                safeThis->track.getNativeEffects().remove(i, true);
+                        }
+                        safeThis->rebuildList();
+                    });
                 }
             ));
 
@@ -457,9 +477,7 @@ private:
         auto types = scanner.getScannedTypesSafe();
 
         if (types.isEmpty())
-        {
             menu.addItem(9999, scanner.isScanning() ? "Escaneando pastas... aguarde" : "Nenhum VST3 encontrado no cache", false);
-        }
         else
         {
             for (int i = 0; i < types.size(); ++i)
@@ -473,46 +491,50 @@ private:
         menu.addItem(8001, "Procurar arquivo .vst3 manualmente...");
         menu.addItem(8002, "Re-escanear pastas VST3 agora");
 
-        menu.showMenuAsync(juce::PopupMenu::Options(), [this, types](int res)
+        juce::Component::SafePointer<TrackRackComponent> safeThis(this);
+        menu.showMenuAsync(juce::PopupMenu::Options(), [safeThis, types](int res)
         {
-            if (res == 0) return;
-
+            if (safeThis == nullptr || res == 0) return;
             if (res == 8001)
             {
-                if (onBrowseFile)
-                    onBrowseFile(track, [this] { rebuildList(); });
+                if (safeThis->onBrowseFile)
+                    safeThis->onBrowseFile(safeThis->track, [safeThis] { if (safeThis != nullptr) safeThis->rebuildList(); });
                 return;
             }
             if (res == 8002)
             {
-                scanner.startBackgroundAutoScan(true);
+                safeThis->scanner.startBackgroundAutoScan(true);
                 return;
             }
 
-            int idx = res - 1;
-            if (idx >= 0 && idx < types.size() && onLoadFromDesc)
-            {
-                onLoadFromDesc(track, types.getReference(idx), [this] { rebuildList(); });
-            }
+            const int idx = res - 1;
+            if (idx >= 0 && idx < types.size() && safeThis->onLoadFromDesc)
+                safeThis->onLoadFromDesc(safeThis->track, types.getReference(idx),
+                    [safeThis] { if (safeThis != nullptr) safeThis->rebuildList(); });
         });
     }
 
     void showNativeMenu()
     {
         juce::PopupMenu menu;
-        menu.addItem(100, "Equalizador Multicanal");
-        menu.addItem(1,   "Compressor Dinamico");
-        menu.addItem(2,   "Distorcao / Overdrive");
-        menu.addItem(3,   "Auto-Tune Vocal (Pitch Correction)");
-        menu.addItem(4,   "Reverb Stereo");
-        menu.addItem(5,   "Delay Stereo");
+        juce::PopupMenu eqSubMenu;
+        for (int b = 8; b <= 120; b += 8)
+            eqSubMenu.addItem(100 + b, "EQ " + juce::String(b) + " Canais/Bandas");
 
-        menu.showMenuAsync(juce::PopupMenu::Options(), [this](int res)
+        menu.addSubMenu("Equalizador Multi-Banda (8 a 120 ch)", eqSubMenu);
+        menu.addItem(1, "Compressor Dinamico");
+        menu.addItem(2, "Distorcao / Overdrive");
+        menu.addItem(3, "Auto-Tune Vocal (Pitch Correction)");
+        menu.addItem(4, "Reverb Stereo");
+        menu.addItem(5, "Delay Stereo");
+
+        juce::Component::SafePointer<TrackRackComponent> safeThis(this);
+        menu.showMenuAsync(juce::PopupMenu::Options(), [safeThis](int res)
         {
-            if (res == 0) return;
+            if (safeThis == nullptr || res == 0) return;
 
             std::unique_ptr<NativeEffect> fx;
-            if (res == 100)     fx = std::make_unique<MultiChannelEQEffect>(16);
+            if (res >= 108 && res <= 220) fx = std::make_unique<MultiBandEQEffect>(res - 100);
             else if (res == 1) fx = std::make_unique<CompressorEffect>();
             else if (res == 2) fx = std::make_unique<DistortionEffect>();
             else if (res == 3) fx = std::make_unique<AutoTuneEffect>();
@@ -521,9 +543,11 @@ private:
 
             if (fx != nullptr)
             {
-                const juce::ScopedLock sl(audioLock);
-                track.addNativeEffect(std::move(fx));
-                rebuildList();
+                {
+                    const juce::ScopedLock sl(safeThis->audioLock);
+                    safeThis->track.addNativeEffect(std::move(fx));
+                }
+                safeThis->rebuildList();
             }
         });
     }

@@ -90,13 +90,15 @@ public:
     void paint(juce::Graphics& g) override
     {
         auto b = getLocalBounds();
-        g.setColour(juce::Colour(0xff25252b));
-        g.fillRect(b);
-        g.setColour(juce::Colour(0xff16161a));
-        g.drawRect(b, 1);
+        g.setColour(juce::Colour(0xff142235));
+        g.fillRoundedRectangle(b.toFloat(), 6.0f);
+        g.setColour(juce::Colour(0xff2b435b));
+        g.drawRoundedRectangle(b.toFloat().reduced(0.5f), 6.0f, 1.0f);
+        g.setColour(accentColour);
+        g.fillRoundedRectangle(0.0f, 0.0f, 3.0f, (float)b.getHeight(), 1.5f);
 
         float peak = juce::jlimit(0.0f, 1.0f, track.currentPeakLevel.load());
-        auto meterArea = juce::Rectangle<int>(b.getRight() - 16, 74, 8, b.getHeight() - 106);
+        auto meterArea = juce::Rectangle<int>(b.getRight() - 16, 74, 8, juce::jmax(0, b.getHeight() - 106));
         g.setColour(juce::Colour(0xff121216));
         g.fillRect(meterArea);
 
@@ -109,8 +111,10 @@ public:
         }
 
         auto footer = b.removeFromBottom(26);
-        g.setColour(accentColour.withBrightness(0.42f));
+        g.setColour(juce::Colour(0xff0b1724));
         g.fillRect(footer);
+        g.setColour(accentColour);
+        g.fillRect(footer.withHeight(2));
         g.setColour(juce::Colours::white);
         g.setFont(juce::FontOptions(11.0f, juce::Font::bold));
         g.drawText(track.getName(), footer.reduced(4, 0), juce::Justification::centredLeft, true);
@@ -124,19 +128,19 @@ public:
 
     void resized() override
     {
-        auto b = getLocalBounds().reduced(4);
-        auto topRow = b.removeFromTop(24);
-        panSlider.setBounds(topRow.removeFromLeft(26));
+        auto b = getLocalBounds().reduced(5);
+        auto topRow = b.removeFromTop(27);
+        panSlider.setBounds(topRow.removeFromLeft(30).reduced(1));
         fxBtn.setBounds(topRow.reduced(2));
 
-        auto btnRow = b.removeFromTop(20);
+        auto btnRow = b.removeFromTop(22);
         muteBtn.setBounds(btnRow.removeFromLeft(btnRow.getWidth() / 2).reduced(1));
         soloBtn.setBounds(btnRow.reduced(1));
 
         volPercentLabel.setBounds(b.removeFromTop(16));
 
-        b.removeFromBottom(24);
-        faderSlider.setBounds(b.withTrimmedRight(16).reduced(4, 2));
+        b.removeFromBottom(25);
+        faderSlider.setBounds(b.withTrimmedRight(16).reduced(5, 2));
     }
 
 private:
@@ -183,20 +187,28 @@ public:
         };
     }
 
+    void syncFromState()
+    {
+        const float value = masterGain.load();
+        fader.setValue(value, juce::dontSendNotification);
+        masterVolLabel.setText(juce::String((int)std::round(value * 100.0f)) + "%", juce::dontSendNotification);
+        repaint();
+    }
+
     void paint(juce::Graphics& g) override
     {
         auto b = getLocalBounds();
-        g.setColour(juce::Colour(0xff1e1e24));
-        g.fillRect(b);
-        g.setColour(juce::Colour(0xff3a3a46));
-        g.drawRect(b, 1);
+        g.setColour(juce::Colour(0xff101c2a));
+        g.fillRoundedRectangle(b.toFloat(), 7.0f);
+        g.setColour(juce::Colour(0xff2b435b));
+        g.drawRoundedRectangle(b.toFloat().reduced(0.5f), 7.0f, 1.0f);
 
         g.setColour(juce::Colours::lightgrey);
         g.setFont(juce::FontOptions(11.0f, juce::Font::bold));
         g.drawText("MASTER", b.removeFromTop(20), juce::Justification::centred);
 
         float peak = juce::jlimit(0.0f, 1.0f, masterPeak.load());
-        auto meterArea = juce::Rectangle<int>(b.getRight() - 22, 42, 12, b.getHeight() - 72);
+        auto meterArea = juce::Rectangle<int>(b.getRight() - 22, 42, 12, juce::jmax(0, b.getHeight() - 72));
         g.setColour(juce::Colour(0xff101014));
         g.fillRect(meterArea);
 
@@ -209,8 +221,10 @@ public:
         }
 
         auto footer = b.removeFromBottom(26);
-        g.setColour(juce::Colour(0xff34343e));
+        g.setColour(juce::Colour(0xff0b1724));
         g.fillRect(footer);
+        g.setColour(juce::Colour(0xff16d8e8));
+        g.fillRect(footer.withHeight(2));
         g.setColour(juce::Colours::white);
         g.drawText("MASTER OUT", footer, juce::Justification::centred);
     }
@@ -219,7 +233,7 @@ public:
     {
         auto b = getLocalBounds().withTrimmedTop(20).withTrimmedBottom(28);
         masterVolLabel.setBounds(b.removeFromTop(18));
-        fader.setBounds(b.withTrimmedRight(24).reduced(8, 2));
+        fader.setBounds(b.withTrimmedRight(24).reduced(10, 2));
     }
 
 private:
@@ -252,9 +266,9 @@ public:
     {
         strips.clear(true);
         const juce::Colour palette[] = {
-            juce::Colour(0xff2ec4b6), juce::Colour(0xff3a86ff), juce::Colour(0xff38b000),
-            juce::Colour(0xff8338ec), juce::Colour(0xffe63946), juce::Colour(0xfffb5607),
-            juce::Colour(0xffffbe0b), juce::Colour(0xff00b4d8)
+            juce::Colour(0xff16c7c9), juce::Colour(0xff398bff), juce::Colour(0xffa78bfa),
+            juce::Colour(0xff22c58b), juce::Colour(0xfff06b8b), juce::Colour(0xfff59e42),
+            juce::Colour(0xffe6c85c), juce::Colour(0xff55bfe8)
         };
 
         for (int i = 0; i < tracks.size(); ++i)
@@ -268,25 +282,25 @@ public:
 
     void refreshMetersAndState()
     {
-        masterStrip.repaint();
+        masterStrip.syncFromState();
         for (auto* s : strips)
             s->syncFromTrack();
     }
 
     void paint(juce::Graphics& g) override
     {
-        g.fillAll(juce::Colour(0xff1b1b20));
-        g.setColour(juce::Colour(0xff383844));
+        g.fillAll(juce::Colour(0xff0b1420));
+        g.setColour(juce::Colour(0xff2a4057));
         g.drawHorizontalLine(0, 0.0f, (float)getWidth());
     }
 
     void resized() override
     {
         auto b = getLocalBounds().withTrimmedTop(2);
-        masterStrip.setBounds(b.removeFromLeft(96));
+        masterStrip.setBounds(b.removeFromLeft(112));
         viewport.setBounds(b);
 
-        int stripW = 74;
+        int stripW = 88;
         int totalW = juce::jmax(viewport.getWidth(), strips.size() * stripW);
         stripsContainer.setSize(totalW, viewport.getHeight());
         for (int i = 0; i < strips.size(); ++i)

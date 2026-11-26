@@ -17,7 +17,7 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        g.fillAll(juce::Colour(0xff18181f));
+        g.fillAll(juce::Colour(0xff08111d));
 
         int totalNotes = highestNote - lowestNote + 1;
         float rowHeight = (float)getHeight() / (float)totalNotes;
@@ -28,14 +28,14 @@ public:
             float y = (float)i * rowHeight;
             bool isBlackKey = juce::MidiMessage::isMidiNoteBlack(midiNote);
 
-            g.setColour(isBlackKey ? juce::Colour(0xff1b1b24) : juce::Colour(0xff22222d));
+            g.setColour(isBlackKey ? juce::Colour(0xff101c2a) : juce::Colour(0xff152438));
             g.fillRect((float)keyWidth, y, (float)(getWidth() - keyWidth), rowHeight);
-            g.setColour(juce::Colour(0xff2c2c38));
+            g.setColour(juce::Colour(0xff294159));
             g.drawHorizontalLine((int)y, (float)keyWidth, (float)getWidth());
 
-            g.setColour(isBlackKey ? juce::Colour(0xff2a2a32) : juce::Colour(0xffe6e6eb));
+            g.setColour(isBlackKey ? juce::Colour(0xff26384a) : juce::Colour(0xffb9c9d8));
             g.fillRect(0.0f, y, (float)keyWidth, rowHeight - 0.5f);
-            g.setColour(juce::Colours::black);
+            g.setColour(juce::Colour(0xff07111d));
             g.drawRect(0.0f, y, (float)keyWidth, rowHeight);
 
             if (midiNote % 12 == 0)
@@ -53,7 +53,7 @@ public:
             float x = (float)keyWidth + ((float)step / (float)gridDivision) * (float)pixelsPerBeat;
             if (x > (float)getWidth()) break;
 
-            g.setColour(step % gridDivision == 0 ? juce::Colour(0xff454558) : juce::Colour(0xff2b2b36));
+            g.setColour(step % gridDivision == 0 ? juce::Colour(0xff3a627e) : juce::Colour(0xff20364b));
             g.drawVerticalLine((int)x, 0.0f, (float)getHeight());
         }
 
@@ -68,10 +68,12 @@ public:
             float w = juce::jmax(6.0f, (float)(note.lengthBeats * pixelsPerBeat) - 1.0f);
             float h = juce::jmax(4.0f, rowHeight - 2.0f);
 
-            g.setColour(juce::Colour(0xff00b4d8));
-            g.fillRoundedRectangle(x, y, w, h, 3.0f);
-            g.setColour(juce::Colours::white);
-            g.drawRoundedRectangle(x, y, w, h, 3.0f, 1.0f);
+            g.setColour(juce::Colour(0xff0d8292));
+            g.fillRoundedRectangle(x, y, w, h, 4.0f);
+            g.setColour(juce::Colour(0xff6ff4f4));
+            g.fillRoundedRectangle(x, y, w, 3.0f, 1.5f);
+            g.setColour(juce::Colour(0xffb9ffff).withAlpha(0.9f));
+            g.drawRoundedRectangle(x, y, w, h, 4.0f, 1.0f);
         }
     }
 

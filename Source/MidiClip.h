@@ -34,8 +34,10 @@ struct MidiClip
                          double bpm,
                          int midiChannel = 1) const
     {
-        if (bpm <= 0.0 || sampleRate <= 0.0 || numSamples <= 0)
+        if (bpm <= 0.0 || sampleRate <= 0.0 || numSamples <= 0 || durationBeats <= 0.0)
             return;
+        if (midiChannel < 1 || midiChannel > 16)
+            midiChannel = 1;
 
         double beatsPerSec = bpm / 60.0;
         double blockStartBeat = blockStartSec * beatsPerSec;
@@ -47,14 +49,18 @@ struct MidiClip
 
         for (const auto& note : notes)
         {
-            double absNoteStart = timelineStartBeats + note.startBeat;
+            if (note.lengthBeats <= 0.0 || note.noteNumber < 0 || note.noteNumber > 127)
+                continue;
+            const double noteStart = juce::jmax(0.0, note.startBeat);
+            double absNoteStart = timelineStartBeats + noteStart;
             double absNoteEnd   = absNoteStart + note.lengthBeats;
 
             if (absNoteStart >= blockStartBeat && absNoteStart < blockEndBeat)
             {
                 int sampleOffset = (int)std::round(((absNoteStart - blockStartBeat) / beatsPerSec) * sampleRate);
                 sampleOffset = juce::jlimit(0, numSamples - 1, sampleOffset);
-                targetMidiBuffer.addEvent(juce::MidiMessage::noteOn(midiChannel, note.noteNumber, note.velocity), sampleOffset);
+                targetMidiBuffer.addEvent(juce::MidiMessage::noteOn(midiChannel, note.noteNumber,
+                    juce::jlimit(0.0f, 1.0f, note.velocity)), sampleOffset);
             }
 
             if (absNoteEnd >= blockStartBeat && absNoteEnd < blockEndBeat)

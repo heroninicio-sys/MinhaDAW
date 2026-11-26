@@ -51,6 +51,83 @@ struct ExportSettings
 
 class AudioExporter
 {
+private:
+    class ProjectRenderSource : public juce::AudioSource
+    {
+    public:
+        ProjectRenderSource(juce::OwnedArray<AudioTrack>& trackList,
+                            juce::CriticalSection& engineLock,
+                            AudioTrack* master,
+                            double engineRate,
+                            double tempo,
+                            float masterLevel,
+                            juce::int64 totalSamples)
+            : tracks(trackList), lock(engineLock), masterTrack(master), sampleRate(engineRate),
+              bpm(tempo), masterGain(masterLevel), totalEngineSamples(totalSamples) {}
+
+        void prepareToPlay(int, double) override {}
+        void releaseResources() override {}
+
+        void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override
+        {
+            info.clearActiveBufferRegion();
+            if (info.buffer == nullptr || info.numSamples <= 0 || info.buffer->getNumChannels() < 2)
+                return;
+
+            const juce::ScopedLock sl(lock);
+            const juce::int64 remaining = juce::jmax((juce::int64)0, totalEngineSamples - renderedSamples);
+            const int samplesToRender = (int)juce::jmin((juce::int64)info.numSamples, remaining);
+            if (samplesToRender <= 0)
+                return;
+
+            bool anySolo = false;
+            for (auto* track : tracks)
+                if (track->isSoloed) { anySolo = true; break; }
+
+            const double blockStartSeconds = (double)renderedSamples / sampleRate;
+            juce::AudioSourceChannelInfo renderInfo(info.buffer, info.startSample, samplesToRender);
+            for (auto* track : tracks)
+                track->processTrack(renderInfo, nullptr, 0, blockStartSeconds, bpm, true, anySolo);
+
+            if (masterTrack != nullptr)
+            {
+                juce::AudioBuffer<float> masterView(info.buffer->getArrayOfWritePointers(), 2,
+                                                     info.startSample, samplesToRender);
+                juce::MidiBuffer emptyMidi;
+                for (int i = 0; i < masterTrack->getVstPlugins().size(); ++i)
+                {
+                    auto* vst = masterTrack->getVstPlugins()[i];
+                    const bool isBypassed = masterTrack->isVstPluginBypassed(i);
+                    if (!isBypassed || vst->getBypassParameter() != nullptr)
+                        vst->processBlock(masterView, emptyMidi);
+                }
+                for (auto* fx : masterTrack->getNativeEffects())
+                    fx->process(masterView);
+            }
+
+            info.buffer->applyGain(0, info.startSample, samplesToRender, masterGain);
+            info.buffer->applyGain(1, info.startSample, samplesToRender, masterGain);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                float* samples = info.buffer->getWritePointer(ch, info.startSample);
+                for (int i = 0; i < samplesToRender; ++i)
+                    samples[i] = juce::jlimit(-0.99f, 0.99f, samples[i]);
+            }
+
+            renderedSamples += samplesToRender;
+        }
+
+    private:
+        juce::OwnedArray<AudioTrack>& tracks;
+        juce::CriticalSection& lock;
+        AudioTrack* masterTrack = nullptr;
+        double sampleRate = 48000.0;
+        double bpm = 120.0;
+        float masterGain = 1.0f;
+        juce::int64 totalEngineSamples = 0;
+        juce::int64 renderedSamples = 0;
+    };
+
 public:
     static juce::String bounceProjectWithSettings(const juce::File& outputFile,
                                                   juce::OwnedArray<AudioTrack>& tracks,
@@ -58,7 +135,9 @@ public:
                                                   double engineSampleRate,
                                                   int blockSize,
                                                   double bpm,
-                                                  const ExportSettings& settings)
+                                                  const ExportSettings& settings,
+                                                  AudioTrack* masterTrack = nullptr,
+                                                  float masterGain = 1.0f)
     {
         if (engineSampleRate <= 0.0) engineSampleRate = 48000.0;
         if (blockSize <= 0) blockSize = 128;
@@ -67,21 +146,22 @@ public:
                                      settings.format == ExportSettings::Format::OGG ||
                                      settings.format == ExportSettings::Format::WMA);
 
+        if (!outputFile.getParentDirectory().createDirectory())
+            return "ERRO: Nao foi possivel criar a pasta de destino.";
+
         juce::File tempWavFile = juce::File::createTempFile(".wav");
         juce::File finalWriteTarget = needsTranscode ? tempWavFile : outputFile;
 
+        double totalDurationSeconds = 0.0;
+        juce::int64 totalEngineSamples = 0;
+        const double targetSampleRate = settings.targetSampleRate > 0.0
+            ? settings.targetSampleRate : engineSampleRate;
+        const int outCh = juce::jlimit(1, 2, settings.numChannels);
+
         {
             const juce::ScopedLock sl(trackLock);
-
-            double totalDurationSeconds = 0.0;
-            bool anySolo = false;
-
             for (auto* track : tracks)
-            {
                 totalDurationSeconds = juce::jmax(totalDurationSeconds, track->getMaxTimelineEnd(bpm));
-                if (track->isSoloed)
-                    anySolo = true;
-            }
 
             if (totalDurationSeconds <= 0.05)
             {
@@ -90,122 +170,98 @@ public:
             }
 
             totalDurationSeconds += 1.5;
-            juce::int64 totalEngineSamples = (juce::int64)(totalDurationSeconds * engineSampleRate);
+            totalEngineSamples = (juce::int64)std::ceil(totalDurationSeconds * engineSampleRate);
+            for (auto* track : tracks)
+                track->prepareToPlay(blockSize, engineSampleRate);
+            if (masterTrack != nullptr)
+                masterTrack->prepareToPlay(blockSize, engineSampleRate);
+        }
 
-            if (finalWriteTarget.existsAsFile())
-                finalWriteTarget.deleteFile();
+        if (finalWriteTarget.existsAsFile())
+            finalWriteTarget.deleteFile();
 
-            auto fileStream = std::unique_ptr<juce::FileOutputStream>(finalWriteTarget.createOutputStream());
-            if (fileStream == nullptr)
+        auto fileStream = std::unique_ptr<juce::FileOutputStream>(finalWriteTarget.createOutputStream());
+        if (fileStream == nullptr)
+        {
+            tempWavFile.deleteFile();
+            return "ERRO: Nao foi possivel criar o arquivo de destino.";
+        }
+
+        std::unique_ptr<juce::AudioFormat> audioFormat;
+        int writeBits = settings.bitsPerSample;
+        if (!needsTranscode && settings.format == ExportSettings::Format::FLAC)
+        {
+            audioFormat = std::make_unique<juce::FlacAudioFormat>();
+            writeBits = juce::jmin(24, settings.bitsPerSample);
+        }
+        else
+        {
+            audioFormat = std::make_unique<juce::WavAudioFormat>();
+        }
+
+        std::unique_ptr<juce::AudioFormatWriter> writer(
+            audioFormat->createWriterFor(fileStream.get(), targetSampleRate,
+                                         (unsigned int)outCh, writeBits, {}, 0));
+        if (writer == nullptr)
+        {
+            tempWavFile.deleteFile();
+            return "ERRO: Falha ao inicializar o gravador de audio.";
+        }
+        fileStream.release();
+
+        ProjectRenderSource renderSource(tracks, trackLock, masterTrack, engineSampleRate,
+                                         bpm, masterGain, totalEngineSamples);
+        juce::ResamplingAudioSource resampler(&renderSource, false, 2);
+        const double resamplingRatio = engineSampleRate / targetSampleRate;
+        resampler.setResamplingRatio(resamplingRatio);
+        resampler.prepareToPlay(blockSize, targetSampleRate);
+
+        const juce::int64 totalOutputSamples = (juce::int64)std::ceil((double)totalEngineSamples / resamplingRatio);
+        juce::AudioBuffer<float> stereoOutput(2, blockSize);
+        juce::AudioBuffer<float> monoOutput(1, blockSize);
+        juce::int64 outputSamplesWritten = 0;
+
+        while (outputSamplesWritten < totalOutputSamples)
+        {
+            const int samplesThisBlock = (int)juce::jmin((juce::int64)blockSize,
+                                                         totalOutputSamples - outputSamplesWritten);
+            stereoOutput.clear();
+            juce::AudioSourceChannelInfo outputInfo(&stereoOutput, 0, samplesThisBlock);
+            resampler.getNextAudioBlock(outputInfo);
+
+            if (outCh == 1)
             {
-                tempWavFile.deleteFile();
-                return "ERRO: Nao foi possivel criar o arquivo de destino.";
-            }
-
-            std::unique_ptr<juce::AudioFormat> audioFormat;
-            int writeBits = settings.bitsPerSample;
-            if (!needsTranscode && settings.format == ExportSettings::Format::FLAC)
-            {
-                audioFormat = std::make_unique<juce::FlacAudioFormat>();
-                writeBits = juce::jmin(24, settings.bitsPerSample);
+                monoOutput.clear();
+                monoOutput.copyFrom(0, 0, stereoOutput, 0, 0, samplesThisBlock);
+                monoOutput.addFrom(0, 0, stereoOutput, 1, 0, samplesThisBlock);
+                monoOutput.applyGain(0, 0, samplesThisBlock, 0.5f);
+                writer->writeFromAudioSampleBuffer(monoOutput, 0, samplesThisBlock);
             }
             else
             {
-                audioFormat = std::make_unique<juce::WavAudioFormat>();
+                writer->writeFromAudioSampleBuffer(stereoOutput, 0, samplesThisBlock);
             }
-
-            int outCh = juce::jlimit(1, 2, settings.numChannels);
-            std::unique_ptr<juce::AudioFormatWriter> writer(
-                audioFormat->createWriterFor(fileStream.get(), settings.targetSampleRate, (unsigned int)outCh, writeBits, {}, 0));
-
-            if (writer == nullptr)
-            {
-                tempWavFile.deleteFile();
-                return "ERRO: Falha ao inicializar o gravador de audio.";
-            }
-
-            fileStream.release();
-
-            juce::AudioBuffer<float> mixBuffer(2, blockSize);
-            juce::AudioSourceChannelInfo channelInfo(&mixBuffer, 0, blockSize);
-
-            for (auto* track : tracks)
-                track->prepareToPlay(blockSize, engineSampleRate);
-
-            double ratio = engineSampleRate / settings.targetSampleRate;
-            juce::LagrangeInterpolator resamplers[2];
-            resamplers[0].reset();
-            resamplers[1].reset();
-
-            juce::int64 samplesRendered = 0;
-            while (samplesRendered < totalEngineSamples)
-            {
-                int samplesThisBlock = (int)juce::jmin((juce::int64)blockSize, totalEngineSamples - samplesRendered);
-                channelInfo.numSamples = samplesThisBlock;
-                mixBuffer.clear();
-
-                double currentTimeSec = (double)samplesRendered / engineSampleRate;
-
-                for (auto* track : tracks)
-                    track->processTrack(channelInfo, nullptr, 0, currentTimeSec, bpm, true, anySolo);
-
-                for (int ch = 0; ch < 2; ++ch)
-                {
-                    float* data = mixBuffer.getWritePointer(ch);
-                    for (int i = 0; i < samplesThisBlock; ++i)
-                        data[i] = juce::jlimit(-0.99f, 0.99f, data[i]);
-                }
-
-                if (std::abs(ratio - 1.0) < 0.0001)
-                {
-                    if (outCh == 1)
-                    {
-                        juce::AudioBuffer<float> monoBuf(1, samplesThisBlock);
-                        monoBuf.copyFrom(0, 0, mixBuffer, 0, 0, samplesThisBlock);
-                        monoBuf.addFrom(0, 0, mixBuffer, 1, 0, samplesThisBlock);
-                        monoBuf.applyGain(0, 0, samplesThisBlock, 0.5f);
-                        writer->writeFromAudioSampleBuffer(monoBuf, 0, samplesThisBlock);
-                    }
-                    else
-                    {
-                        writer->writeFromAudioSampleBuffer(mixBuffer, 0, samplesThisBlock);
-                    }
-                }
-                else
-                {
-                    int expectedOutSamples = (int)std::ceil((double)samplesThisBlock / ratio) + 4;
-                    juce::AudioBuffer<float> resampledBuf(outCh, expectedOutSamples);
-                    resampledBuf.clear();
-
-                    for (int ch = 0; ch < outCh; ++ch)
-                    {
-                        int srcCh = (outCh == 1) ? 0 : ch;
-                        resamplers[ch].process(ratio,
-                                               mixBuffer.getReadPointer(srcCh),
-                                               resampledBuf.getWritePointer(ch),
-                                               expectedOutSamples);
-                    }
-
-                    int actualOut = (int)((double)samplesThisBlock / ratio);
-                    actualOut = juce::jlimit(1, expectedOutSamples, actualOut);
-                    writer->writeFromAudioSampleBuffer(resampledBuf, 0, actualOut);
-                }
-
-                samplesRendered += samplesThisBlock;
-            }
+            outputSamplesWritten += samplesThisBlock;
         }
+
+        resampler.releaseResources();
+        writer.reset();
 
         if (needsTranscode)
         {
             bool ok = transcodeWithFfmpeg(tempWavFile, outputFile, settings);
-            tempWavFile.deleteFile();
-
             if (!ok)
             {
-                return "AVISO (" + settings.getFormatName() + "): Coloque 'ffmpeg.exe' na pasta do executavel para gerar " +
-                       settings.getFormatName() + " direto em " + juce::String(settings.bitRateKbps) +
-                       " kbps (taxa " + juce::String((int)settings.targetSampleRate) + " Hz).";
+                juce::File fallbackWav = outputFile.withFileExtension(".wav");
+                if (fallbackWav.existsAsFile()) fallbackWav.deleteFile();
+                const bool preservedWav = tempWavFile.copyFileTo(fallbackWav);
+                if (preservedWav)
+                    tempWavFile.deleteFile();
+                return "AVISO: FFmpeg nao conseguiu gerar " + settings.getFormatName() +
+                       ". A mixagem foi preservada em WAV: " +
+                       (preservedWav ? fallbackWav.getFullPathName() : tempWavFile.getFullPathName());
             }
+            tempWavFile.deleteFile();
         }
 
         return "OK: Exportado em " + settings.getFormatName() + " (" +
@@ -213,22 +269,37 @@ public:
                juce::String(settings.bitRateKbps) + " kbps) para:\n" + outputFile.getFullPathName();
     }
 
-    static void showExportDialog(juce::OwnedArray<AudioTrack>& tracks,
-                                 juce::CriticalSection& trackLock,
-                                 double engineSampleRate,
-                                 int blockSize,
-                                 double bpm)
+    class ExportDialogWindow : public juce::DocumentWindow
     {
-        auto* panel = new ExportDialogPanel(tracks, trackLock, engineSampleRate, blockSize, bpm);
-        panel->setSize(440, 320);
+    public:
+        ExportDialogWindow(juce::Component* content, juce::LookAndFeel* lookAndFeel)
+            : DocumentWindow("Renderizar Mix - MinhaDAW Studio", juce::Colour(0xff0b1420), DocumentWindow::allButtons)
+        {
+            setLookAndFeel(lookAndFeel);
+            setUsingNativeTitleBar(true);
+            setResizable(true, true);
+            setContentOwned(content, true);
+            centreWithSize(620, 390);
+            setVisible(true);
+        }
 
-        juce::DialogWindow::LaunchOptions opts;
-        opts.content.setOwned(panel);
-        opts.dialogTitle = "Configurar Exportacao / Renderizacao";
-        opts.dialogBackgroundColour = juce::Colour(0xff181a22);
-        opts.escapeKeyTriggersCloseButton = true;
-        opts.useNativeTitleBar = true;
-        opts.launchAsync();
+        void closeButtonPressed() override { setVisible(false); }
+    };
+
+    static std::unique_ptr<juce::DocumentWindow> createExportDialogWindow(
+        juce::OwnedArray<AudioTrack>& tracks,
+        juce::CriticalSection& trackLock,
+        double engineSampleRate,
+        int blockSize,
+        double bpm,
+        AudioTrack* masterTrack = nullptr,
+        std::atomic<float>* masterGainRef = nullptr,
+        juce::LookAndFeel* lookAndFeel = nullptr)
+    {
+        auto* panel = new ExportDialogPanel(tracks, trackLock, engineSampleRate, blockSize,
+                                            bpm, masterTrack, masterGainRef);
+        panel->setSize(560, 340);
+        return std::make_unique<ExportDialogWindow>(panel, lookAndFeel);
     }
 
 private:
@@ -270,8 +341,10 @@ private:
     public:
         ExportDialogPanel(juce::OwnedArray<AudioTrack>& tRef,
                           juce::CriticalSection& lRef,
-                          double sr, int bs, double curBpm)
-            : tracks(tRef), lock(lRef), sampleRate(sr), blockSize(bs), bpm(curBpm)
+                          double sr, int bs, double curBpm, AudioTrack* masterTrackRef,
+                          std::atomic<float>* masterGainRef)
+            : tracks(tRef), lock(lRef), sampleRate(sr), blockSize(bs), bpm(curBpm),
+              masterTrack(masterTrackRef), masterGainAtomic(masterGainRef)
         {
             addLabelAndBox(formatLbl, "Formato de Saida:", formatBox,
                            { { "WAV (PCM Sem Perdas)", 1 },
@@ -304,7 +377,7 @@ private:
 
         void paint(juce::Graphics& g) override
         {
-            g.fillAll(juce::Colour(0xff181a22));
+            g.fillAll(juce::Colour(0xff101d2b));
         }
 
         void resized() override
@@ -359,9 +432,11 @@ private:
                 juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getChildFile(defaultName),
                 wildcard);
 
+            juce::Component::SafePointer<ExportDialogPanel> safeThis(this);
             chooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
-                [this, chooser, s](const juce::FileChooser& fc)
+                [safeThis, chooser, s](const juce::FileChooser& fc)
                 {
+                    if (safeThis == nullptr) return;
                     auto file = fc.getResult();
                     if (file != juce::File())
                     {
@@ -370,7 +445,9 @@ private:
                             : file.withFileExtension(s.getExtension());
 
                         juce::String status = AudioExporter::bounceProjectWithSettings(
-                            target, tracks, lock, sampleRate, blockSize, bpm, s);
+                            target, safeThis->tracks, safeThis->lock, safeThis->sampleRate,
+                            safeThis->blockSize, safeThis->bpm, s, safeThis->masterTrack,
+                            safeThis->masterGainAtomic != nullptr ? safeThis->masterGainAtomic->load() : 1.0f);
 
                         bool ok = status.startsWith("OK");
                         juce::AlertWindow::showMessageBoxAsync(
@@ -378,8 +455,8 @@ private:
                             ok ? "Exportacao Concluida" : "Resultado da Exportacao",
                             status);
 
-                        if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
-                            dw->exitModalState(0);
+                        if (auto* dw = safeThis->findParentComponentOfClass<juce::DocumentWindow>())
+                            dw->setVisible(false);
                     }
                 });
         }
@@ -389,6 +466,8 @@ private:
         double sampleRate;
         int blockSize;
         double bpm;
+        AudioTrack* masterTrack = nullptr;
+        std::atomic<float>* masterGainAtomic = nullptr;
 
         juce::Label formatLbl, rateLbl, bitrateLbl, chLbl;
         juce::ComboBox formatBox, rateBox, bitrateBox, chBox;

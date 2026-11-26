@@ -28,9 +28,9 @@ public:
         g.fillAll(juce::Colours::black.withAlpha(0.76f));
 
         auto box = getLocalBounds().withSizeKeepingCentre(520, 200);
-        g.setColour(juce::Colour(0xff202128));
+        g.setColour(juce::Colour(0xff142337));
         g.fillRoundedRectangle(box.toFloat(), 8.0f);
-        g.setColour(juce::Colour(0xff3a86ff));
+        g.setColour(juce::Colour(0xff16d8e8));
         g.drawRoundedRectangle(box.toFloat(), 8.0f, 1.5f);
 
         auto content = box.reduced(24, 18);
@@ -48,13 +48,13 @@ public:
 
         content.removeFromTop(12);
         auto barRect = content.removeFromTop(8).reduced(20, 0);
-        g.setColour(juce::Colour(0xff121216));
+        g.setColour(juce::Colour(0xff07111d));
         g.fillRoundedRectangle(barRect.toFloat(), 4.0f);
 
         float pulse = (float)(0.5 + 0.5 * std::sin(juce::Time::getMillisecondCounterHiRes() * 0.005));
         int indicatorW = barRect.getWidth() / 3;
         int indicatorX = barRect.getX() + (int)(pulse * (float)(barRect.getWidth() - indicatorW));
-        g.setColour(juce::Colour(0xff00f5d4));
+        g.setColour(juce::Colour(0xff16d8e8));
         g.fillRoundedRectangle((float)indicatorX, (float)barRect.getY(), (float)indicatorW, (float)barRect.getHeight(), 4.0f);
 
         content.removeFromTop(10);

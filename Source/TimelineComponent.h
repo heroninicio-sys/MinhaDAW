@@ -1,8 +1,5 @@
 #pragma once
 #include <JuceHeader.h>
-#include <cmath>
-#include <functional>
-#include <map>
 #include "AudioTrack.h"
 
 class TrackRowComponent : public juce::Component,
@@ -17,8 +14,7 @@ public:
         TrimLeft,
         TrimRight,
         FadeIn,
-        FadeOut,
-        ReorderTrack
+        FadeOut
     };
 
     TrackRowComponent(AudioTrack& trackRef,
@@ -31,9 +27,7 @@ public:
                       std::function<void(AudioTrack&, MidiClip&)> onOpenPianoRollCallback,
                       std::function<void(double)> onSeekCallback,
                       std::function<void(TrackRowComponent*, AudioClip*, MidiClip*)> onSelectCallback,
-                      std::function<void(int)> onDeleteTrackCallback,
-                      std::function<void(int, int)> onMoveTrackCallback,
-                      std::function<void(int, TrackRowComponent&)> onOpenTrackMenuCallback)
+                      std::function<void(int)> onDeleteTrackCallback)
         : track(trackRef),
           index(trackIndex),
           formatManager(formatMgr),
@@ -44,14 +38,12 @@ public:
           openPianoRollCallback(std::move(onOpenPianoRollCallback)),
           seekCallback(std::move(onSeekCallback)),
           selectCallback(std::move(onSelectCallback)),
-          deleteTrackCallback(std::move(onDeleteTrackCallback)),
-          moveTrackCallback(std::move(onMoveTrackCallback)),
-          openTrackMenuCallback(std::move(onOpenTrackMenuCallback))
+          deleteTrackCallback(std::move(onDeleteTrackCallback))
     {
         const juce::Colour palette[] = {
-            juce::Colour(0xff2ec4b6), juce::Colour(0xff3a86ff), juce::Colour(0xff38b000),
-            juce::Colour(0xff8338ec), juce::Colour(0xffe63946), juce::Colour(0xfffb5607),
-            juce::Colour(0xffffbe0b), juce::Colour(0xff00b4d8)
+            juce::Colour(0xff16c7c9), juce::Colour(0xff398bff), juce::Colour(0xffa78bfa),
+            juce::Colour(0xff22c58b), juce::Colour(0xfff06b8b), juce::Colour(0xfff59e42),
+            juce::Colour(0xffe6c85c), juce::Colour(0xff55bfe8)
         };
         trackAccentColour = palette[index % 8];
 
@@ -134,23 +126,9 @@ public:
         };
 
         addAndMakeVisible(volumeValueLabel);
-        volumeValueLabel.setEditable(true, true, false);
-        volumeValueLabel.setTooltip("Clique para digitar o volume (ex: 85 ou 100%)");
         volumeValueLabel.setFont(juce::FontOptions(11.0f, juce::Font::bold));
         volumeValueLabel.setColour(juce::Label::textColourId, juce::Colour(0xff90e0ef));
-        volumeValueLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff14161d));
-        volumeValueLabel.setColour(juce::Label::backgroundWhenEditingColourId, juce::Colour(0xff0d0e12));
         volumeValueLabel.setJustificationType(juce::Justification::centredRight);
-        volumeValueLabel.onTextChange = [this]
-        {
-            juce::String txt = volumeValueLabel.getText().replaceCharacter('%', ' ').trim();
-            float pct = txt.getFloatValue();
-            float clampedPct = juce::jlimit(0.0f, 150.0f, pct);
-            track.gain = clampedPct / 100.0f;
-            volumeSlider.setValue(track.gain, juce::dontSendNotification);
-            updateVolumeLabel();
-            if (onTrackStateChanged) onTrackStateChanged();
-        };
         updateVolumeLabel();
 
         addAndMakeVisible(importBtn);
@@ -210,6 +188,7 @@ public:
 
     void rebuildThumbnails()
     {
+        const juce::ScopedLock sl(audioLock);
         thumbnails.clear();
         for (auto* clip : track.getClips())
         {
@@ -245,12 +224,8 @@ public:
 
     void mouseMove(const juce::MouseEvent& e) override
     {
-        if (e.x < headerWidth)
-        {
-            setMouseCursor(juce::MouseCursor::PointingHandCursor);
-            return;
-        }
-        if (itemsLocked)
+        const juce::ScopedLock sl(audioLock);
+        if (e.x < headerWidth || itemsLocked)
         {
             setMouseCursor(juce::MouseCursor::NormalCursor);
             return;
@@ -278,6 +253,7 @@ public:
 
     void mouseDoubleClick(const juce::MouseEvent& e) override
     {
+        const juce::ScopedLock sl(audioLock);
         if (e.x < headerWidth) return;
 
         for (int i = track.getMidiClips().size() - 1; i >= 0; --i)
@@ -294,17 +270,10 @@ public:
 
     void mouseDown(const juce::MouseEvent& e) override
     {
+        const juce::ScopedLock sl(audioLock);
         if (e.x < headerWidth)
         {
             notifySelected(nullptr, nullptr);
-            mouseDownScreenPos = e.getScreenPosition();
-            draggingTrackRow = false;
-
-            // Clique esquerdo abre o menu de opções da track (e arrastar move a track entre outras tracks)
-            if (e.mods.isLeftButtonDown() && openTrackMenuCallback)
-            {
-                pendingMenuOpen = true;
-            }
             return;
         }
 
@@ -355,18 +324,6 @@ public:
 
     void mouseDrag(const juce::MouseEvent& e) override
     {
-        if (e.x < headerWidth && e.mods.isLeftButtonDown())
-        {
-            int dy = e.getScreenPosition().y - mouseDownScreenPos.y;
-            if (std::abs(dy) > 6)
-            {
-                draggingTrackRow = true;
-                pendingMenuOpen = false;
-                setMouseCursor(juce::MouseCursor::DraggingHandCursor);
-            }
-            return;
-        }
-
         if (currentDragMode == DragMode::None || itemsLocked) return;
 
         double deltaSeconds = (double)(e.x - dragStartX) / pixelsPerSecond;
@@ -418,28 +375,8 @@ public:
         repaint();
     }
 
-    void mouseUp(const juce::MouseEvent& e) override
+    void mouseUp(const juce::MouseEvent&) override
     {
-        if (draggingTrackRow)
-        {
-            draggingTrackRow = false;
-            pendingMenuOpen = false;
-            int dy = e.getScreenPosition().y - mouseDownScreenPos.y;
-            int rowH = juce::jmax(24, getHeight());
-            int deltaRows = (int)std::round((double)dy / (double)rowH);
-            if (deltaRows != 0 && moveTrackCallback)
-                moveTrackCallback(index, index + deltaRows);
-            return;
-        }
-
-        if (pendingMenuOpen && e.x < headerWidth)
-        {
-            pendingMenuOpen = false;
-            if (openTrackMenuCallback)
-                openTrackMenuCallback(index, *this);
-            return;
-        }
-
         activeAudioClip = nullptr;
         activeMidiClip = nullptr;
         currentDragMode = DragMode::None;
@@ -447,18 +384,16 @@ public:
 
     void paint(juce::Graphics& g) override
     {
+        const juce::ScopedLock sl(audioLock);
         auto bounds = getLocalBounds();
-        int indentPx = track.folderDepth > 0 ? 12 : 0;
 
         auto controlArea = bounds.removeFromLeft(headerWidth);
-        g.setColour(isTrackSelected ? juce::Colour(0xff2c303c) : juce::Colour(0xff21242d));
+        g.setColour(isTrackSelected ? juce::Colour(0xff1b3044) : juce::Colour(0xff122033));
         g.fillRect(controlArea);
-
-        if (indentPx > 0)
-        {
-            g.setColour(trackAccentColour.withAlpha(0.28f));
-            g.fillRect(controlArea.getX(), controlArea.getY(), indentPx, controlArea.getHeight());
-        }
+        g.setColour(juce::Colour(0xff2a4057));
+        g.drawRect(controlArea, 1);
+        g.setColour(trackAccentColour);
+        g.fillRect(controlArea.getX(), controlArea.getY(), 3, controlArea.getHeight());
 
         auto numCol = controlArea.removeFromLeft(24);
         g.setColour(trackAccentColour);
@@ -481,7 +416,7 @@ public:
         g.setColour(juce::Colour(0xff14161c));
         g.drawRect(0, 0, headerWidth, getHeight(), 1);
 
-        g.setColour(index % 2 == 0 ? juce::Colour(0xff181a20) : juce::Colour(0xff1b1d24));
+        g.setColour(index % 2 == 0 ? juce::Colour(0xff0c1724) : juce::Colour(0xff0e1a29));
         g.fillRect(bounds);
 
         if (showGridLines)
@@ -496,9 +431,9 @@ public:
                 if (gridX > getWidth()) break;
 
                 int stepsPerBar = 4 * gridDivision;
-                if (step % stepsPerBar == 0)       g.setColour(juce::Colour(0xff363a48));
-                else if (step % gridDivision == 0) g.setColour(juce::Colour(0xff262934));
-                else                               g.setColour(juce::Colour(0xff1f222b));
+                if (step % stepsPerBar == 0)       g.setColour(juce::Colour(0xff2c4962));
+                else if (step % gridDivision == 0) g.setColour(juce::Colour(0xff20364b));
+                else                               g.setColour(juce::Colour(0xff17283a));
 
                 g.drawVerticalLine(gridX, (float)bounds.getY(), (float)bounds.getBottom());
             }
@@ -514,8 +449,10 @@ public:
 
             bool isSelected = (clip == selectedAudioClip) || selectAllItemsActive;
 
-            g.setColour(isSelected ? trackAccentColour.brighter(0.15f) : trackAccentColour.withBrightness(0.48f));
-            g.fillRoundedRectangle(clipRect.toFloat(), 4.0f);
+            g.setColour(isSelected ? trackAccentColour.brighter(0.18f) : trackAccentColour.withBrightness(0.56f));
+            g.fillRoundedRectangle(clipRect.toFloat(), 5.0f);
+            g.setColour(trackAccentColour.brighter(0.35f).withAlpha(0.75f));
+            g.fillRoundedRectangle((float)clipRect.getX(), (float)clipRect.getY(), 3.0f, (float)clipRect.getHeight(), 1.5f);
 
             auto titleStrip = clipRect.withHeight(16);
             g.setColour(juce::Colours::black.withAlpha(0.35f));
@@ -617,27 +554,6 @@ public:
             }
         }
 
-        // Desenha Envelope de Volume sobre a track quando habilitado
-        if (track.showVolumeEnvelope)
-        {
-            auto pts = track.getVolumeEnvelopeCopy();
-            if (!pts.empty())
-            {
-                g.setColour(juce::Colour(0xffffbe0b));
-                juce::Path envPath;
-                for (size_t i = 0; i < pts.size(); ++i)
-                {
-                    float px = (float)headerWidth + (float)(pts[i].timeSec * pixelsPerSecond);
-                    float norm = juce::jlimit(0.0f, 1.0f, pts[i].value / 1.5f);
-                    float py = (float)bounds.getBottom() - 4.0f - norm * ((float)bounds.getHeight() - 8.0f);
-                    if (i == 0) envPath.startNewSubPath(px, py);
-                    else envPath.lineTo(px, py);
-                    g.fillEllipse(px - 3.5f, py - 3.5f, 7.0f, 7.0f);
-                }
-                g.strokePath(envPath, juce::PathStrokeType(1.6f));
-            }
-        }
-
         for (auto* mc : track.getMidiClips())
         {
             auto mcRect = getMidiClipBounds(*mc);
@@ -645,13 +561,14 @@ public:
 
             bool isSelected = (mc == selectedMidiClip) || selectAllItemsActive;
 
-            g.setColour(isSelected ? juce::Colour(0xff2b9348) : juce::Colour(0xff1e6b36));
+            g.setColour(isSelected ? juce::Colour(0xff147b78) : juce::Colour(0xff145b61));
             g.fillRoundedRectangle(mcRect.toFloat(), 4.0f);
             g.setColour(isSelected ? juce::Colours::white : juce::Colour(0xff55a630));
             g.drawRoundedRectangle(mcRect.toFloat(), 4.0f, isSelected ? 1.8f : 1.0f);
 
             for (const auto& note : mc->notes)
             {
+                if (mc->durationBeats <= 0.0) continue;
                 float nx = (float)mcRect.getX() + (float)((note.startBeat / mc->durationBeats) * (double)mcRect.getWidth());
                 float nw = juce::jmax(3.0f, (float)((note.lengthBeats / mc->durationBeats) * (double)mcRect.getWidth()));
                 float normPitch = juce::jlimit(0.0f, 1.0f, (float)(84 - note.noteNumber) / 48.0f);
@@ -679,20 +596,20 @@ public:
     {
         auto controlArea = getLocalBounds().removeFromLeft(headerWidth).withTrimmedLeft(26).withTrimmedRight(12).reduced(4, 4);
 
-        auto topRow = controlArea.removeFromTop(22);
-        armBtn.setBounds(topRow.removeFromLeft(22).reduced(1));
-        monBtn.setBounds(topRow.removeFromLeft(34).reduced(1));
+        auto topRow = controlArea.removeFromTop(26);
+        armBtn.setBounds(topRow.removeFromLeft(24).reduced(1));
+        monBtn.setBounds(topRow.removeFromLeft(38).reduced(1));
         delTrackBtn.setBounds(topRow.removeFromRight(22).reduced(1));
         fxBtn.setBounds(topRow.removeFromRight(28).reduced(1));
         midiBtn.setBounds(topRow.removeFromRight(36).reduced(1));
         importBtn.setBounds(topRow.removeFromRight(32).reduced(1));
         nameLabel.setBounds(topRow.reduced(2, 0));
 
-        controlArea.removeFromTop(6);
-        auto bottomRow = controlArea.removeFromTop(22);
-        muteBtn.setBounds(bottomRow.removeFromLeft(24).reduced(1));
-        soloBtn.setBounds(bottomRow.removeFromLeft(24).reduced(1));
-        volumeValueLabel.setBounds(bottomRow.removeFromRight(46));
+        controlArea.removeFromTop(8);
+        auto bottomRow = controlArea.removeFromTop(24);
+        muteBtn.setBounds(bottomRow.removeFromLeft(26).reduced(1));
+        soloBtn.setBounds(bottomRow.removeFromLeft(26).reduced(1));
+        volumeValueLabel.setBounds(bottomRow.removeFromRight(42));
         volumeSlider.setBounds(bottomRow.reduced(2, 0));
     }
 
@@ -773,10 +690,6 @@ private:
     AudioClip* selectedAudioClip = nullptr;
     MidiClip* selectedMidiClip = nullptr;
 
-    juce::Point<int> mouseDownScreenPos;
-    bool draggingTrackRow = false;
-    bool pendingMenuOpen = false;
-
     AudioClip* activeAudioClip = nullptr;
     MidiClip* activeMidiClip = nullptr;
     DragMode currentDragMode = DragMode::None;
@@ -798,6 +711,4 @@ private:
     std::function<void(double)> seekCallback;
     std::function<void(TrackRowComponent*, AudioClip*, MidiClip*)> selectCallback;
     std::function<void(int)> deleteTrackCallback;
-    std::function<void(int, int)> moveTrackCallback;
-    std::function<void(int, TrackRowComponent&)> openTrackMenuCallback;
 };

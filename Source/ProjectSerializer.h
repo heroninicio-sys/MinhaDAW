@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
-#include <vector>
+#include <cmath>
+#include <utility>
 #include "AudioTrack.h"
 
 struct TimelineRegion
@@ -18,12 +19,17 @@ public:
                             double bpm,
                             const std::vector<TimelineRegion>& regions,
                             juce::OwnedArray<AudioTrack>& tracks,
-                            juce::CriticalSection& trackLock)
+                            juce::CriticalSection& trackLock,
+                            AudioTrack* masterTrack = nullptr,
+                            float masterGain = 1.0f)
     {
+        if (file == juce::File() || !file.getParentDirectory().createDirectory())
+            return false;
+
         const juce::ScopedLock sl(trackLock);
 
         auto* rootObj = new juce::DynamicObject();
-        rootObj->setProperty("version", "1.3");
+        rootObj->setProperty("version", "1.4");
         rootObj->setProperty("bpm", bpm);
 
         juce::Array<juce::var> regionsArr;
@@ -44,12 +50,12 @@ public:
         {
             auto* tObj = new juce::DynamicObject();
             tObj->setProperty("name", track->getName());
-            tObj->setProperty("gain", track->gain);
-            tObj->setProperty("pan", track->pan);
-            tObj->setProperty("muted", track->isMuted);
-            tObj->setProperty("soloed", track->isSoloed);
-            tObj->setProperty("armed", track->isArmed);
-            tObj->setProperty("monitoring", track->isMonitoring);
+            tObj->setProperty("gain", track->gain.load());
+            tObj->setProperty("pan", track->pan.load());
+            tObj->setProperty("muted", track->isMuted.load());
+            tObj->setProperty("soloed", track->isSoloed.load());
+            tObj->setProperty("armed", track->isArmed.load());
+            tObj->setProperty("monitoring", track->isMonitoring.load());
 
             juce::Array<juce::var> audioClipsArr;
             for (auto* c : track->getClips())
@@ -93,7 +99,7 @@ public:
             {
                 auto* fxObj = new juce::DynamicObject();
                 fxObj->setProperty("typeId", fx->getTypeId());
-                fxObj->setProperty("bypassed", fx->bypassed);
+                fxObj->setProperty("bypassed", fx->bypassed.load());
                 fxObj->setProperty("state", fx->saveState());
                 nativeFxArr.add(juce::var(fxObj));
             }
@@ -104,6 +110,7 @@ public:
             {
                 auto* vObj = new juce::DynamicObject();
                 vObj->setProperty("path", i < track->vstFilePaths.size() ? track->vstFilePaths[i] : "");
+                vObj->setProperty("bypassed", track->isVstPluginBypassed(i));
 
                 juce::MemoryBlock stateMem;
                 track->getVstPlugins()[i]->getStateInformation(stateMem);
@@ -116,6 +123,37 @@ public:
         }
 
         rootObj->setProperty("tracks", tracksArray);
+
+        // Persist the master insert chain separately from user tracks.
+        auto* masterObj = new juce::DynamicObject();
+        masterObj->setProperty("gain", juce::jlimit(0.0f, 1.5f, masterGain));
+        juce::Array<juce::var> masterFxArray;
+        juce::Array<juce::var> masterVstArray;
+        if (masterTrack != nullptr)
+        {
+            for (auto* fx : masterTrack->getNativeEffects())
+            {
+                auto* fxObj = new juce::DynamicObject();
+                fxObj->setProperty("typeId", fx->getTypeId());
+                fxObj->setProperty("bypassed", fx->bypassed.load());
+                fxObj->setProperty("state", fx->saveState());
+                masterFxArray.add(juce::var(fxObj));
+            }
+            for (int i = 0; i < masterTrack->getVstPlugins().size(); ++i)
+            {
+                auto* vstObj = new juce::DynamicObject();
+                vstObj->setProperty("path", i < masterTrack->vstFilePaths.size() ? masterTrack->vstFilePaths[i] : "");
+                vstObj->setProperty("bypassed", masterTrack->isVstPluginBypassed(i));
+                juce::MemoryBlock stateMem;
+                masterTrack->getVstPlugins()[i]->getStateInformation(stateMem);
+                vstObj->setProperty("stateBase64", stateMem.toBase64Encoding());
+                masterVstArray.add(juce::var(vstObj));
+            }
+        }
+        masterObj->setProperty("nativeEffects", masterFxArray);
+        masterObj->setProperty("vstPlugins", masterVstArray);
+        rootObj->setProperty("masterTrack", juce::var(masterObj));
+
         juce::String jsonText = juce::JSON::toString(juce::var(rootObj), true);
         return file.replaceWithText(jsonText);
     }
@@ -129,19 +167,37 @@ public:
                             juce::AudioPluginFormatManager& pluginFmtMgr,
                             juce::TimeSliceThread& diskThread,
                             double sampleRate,
-                            int blockSize)
+                            int blockSize,
+                            AudioTrack* masterTrack = nullptr,
+                            float* outMasterGain = nullptr)
     {
+        if (!file.existsAsFile())
+            return false;
+
         auto parsed = juce::JSON::parse(file);
         auto* rootObj = parsed.getDynamicObject();
         if (rootObj == nullptr)
             return false;
 
-        const juce::ScopedLock sl(trackLock);
-        tracks.clear(true);
-        outRegions.clear();
+        // Validate the complete top-level structure before touching the open session.
+        auto* tracksArr = rootObj->getProperty("tracks").getArray();
+        if (tracksArr == nullptr)
+            return false;
 
-        outBpm = (double)rootObj->getProperty("bpm");
-        if (outBpm <= 0.0) outBpm = 120.0;
+        for (const auto& trackVar : *tracksArr)
+            if (trackVar.getDynamicObject() == nullptr)
+                return false;
+
+        const juce::ScopedLock sl(trackLock);
+        juce::OwnedArray<AudioTrack> loadedTracks;
+        juce::OwnedArray<NativeEffect> loadedMasterEffects;
+        juce::OwnedArray<juce::AudioPluginInstance> loadedMasterPlugins;
+        juce::Array<bool> loadedMasterVstBypassed;
+        juce::StringArray loadedMasterPluginPaths;
+        std::vector<TimelineRegion> loadedRegions;
+        double loadedBpm = (double)rootObj->getProperty("bpm");
+        if (!std::isfinite(loadedBpm) || loadedBpm < 20.0 || loadedBpm > 300.0)
+            loadedBpm = 120.0;
 
         if (auto* regArr = rootObj->getProperty("regions").getArray())
         {
@@ -149,7 +205,7 @@ public:
             {
                 if (auto* rObj = rVar.getDynamicObject())
                 {
-                    outRegions.push_back({
+                    loadedRegions.push_back({
                         rObj->getProperty("name").toString(),
                         (double)rObj->getProperty("startSec"),
                         (double)rObj->getProperty("endSec"),
@@ -159,15 +215,12 @@ public:
             }
         }
 
-        auto* tracksArr = rootObj->getProperty("tracks").getArray();
-        if (tracksArr == nullptr) return false;
-
         for (const auto& tVar : *tracksArr)
         {
             auto* tObj = tVar.getDynamicObject();
             if (tObj == nullptr) continue;
 
-            auto* track = tracks.add(new AudioTrack(tObj->getProperty("name").toString(), audioFmtMgr, diskThread));
+            auto* track = loadedTracks.add(new AudioTrack(tObj->getProperty("name").toString(), audioFmtMgr, diskThread));
             track->prepareToPlay(blockSize, sampleRate);
             track->gain         = (float)tObj->getProperty("gain");
             track->pan          = tObj->hasProperty("pan") ? (float)tObj->getProperty("pan") : 0.0f;
@@ -191,6 +244,7 @@ public:
                             clip->fadeInDuration    = (double)cObj->getProperty("fadeIn");
                             clip->fadeOutDuration   = (double)cObj->getProperty("fadeOut");
                             clip->clipGain          = cObj->hasProperty("clipGain") ? (float)cObj->getProperty("clipGain") : 1.0f;
+                            clip->prepareToPlay(blockSize, sampleRate);
                             track->getClips().add(std::move(clip));
                         }
                     }
@@ -232,7 +286,7 @@ public:
                         juce::String typeId = fxObj->getProperty("typeId").toString();
                         std::unique_ptr<NativeEffect> fx;
 
-                        if (typeId == "NativeEQ")            fx = std::make_unique<MultiChannelEQEffect>(16);
+                        if (typeId == "NativeEQ")            fx = std::make_unique<MultiBandEQEffect>(8);
                         else if (typeId == "NativeComp")     fx = std::make_unique<CompressorEffect>();
                         else if (typeId == "NativeDist")     fx = std::make_unique<DistortionEffect>();
                         else if (typeId == "NativeAutoTune") fx = std::make_unique<AutoTuneEffect>();
@@ -256,7 +310,7 @@ public:
                     if (auto* vObj = vVar.getDynamicObject())
                     {
                         juce::File vstFile(vObj->getProperty("path").toString());
-                        if (vstFile.existsAsFile())
+                        if (vstFile.exists())
                         {
                             juce::OwnedArray<juce::PluginDescription> descs;
                             for (int fmtIdx = 0; fmtIdx < pluginFmtMgr.getNumFormats(); ++fmtIdx)
@@ -284,6 +338,90 @@ public:
             }
         }
 
+        float loadedMasterGain = 1.0f;
+        if (auto* masterObj = rootObj->getProperty("masterTrack").getDynamicObject())
+        {
+            loadedMasterGain = (float)masterObj->getProperty("gain");
+            if (!std::isfinite(loadedMasterGain)) loadedMasterGain = 1.0f;
+            loadedMasterGain = juce::jlimit(0.0f, 1.5f, loadedMasterGain);
+
+            if (auto* fxArr = masterObj->getProperty("nativeEffects").getArray())
+            {
+                for (const auto& fxVar : *fxArr)
+                {
+                    auto* fxObj = fxVar.getDynamicObject();
+                    if (fxObj == nullptr) continue;
+                    const auto typeId = fxObj->getProperty("typeId").toString();
+                    std::unique_ptr<NativeEffect> fx;
+                    if (typeId == "NativeEQ") fx = std::make_unique<MultiBandEQEffect>(8);
+                    else if (typeId == "NativeComp") fx = std::make_unique<CompressorEffect>();
+                    else if (typeId == "NativeDist") fx = std::make_unique<DistortionEffect>();
+                    else if (typeId == "NativeAutoTune") fx = std::make_unique<AutoTuneEffect>();
+                    else if (typeId == "NativeReverb") fx = std::make_unique<ReverbEffect>();
+                    else if (typeId == "NativeDelay") fx = std::make_unique<DelayEffect>();
+                    if (fx != nullptr)
+                    {
+                        fx->bypassed.store((bool)fxObj->getProperty("bypassed"));
+                        fx->loadState(fxObj->getProperty("state"));
+                        loadedMasterEffects.add(std::move(fx));
+                    }
+                }
+            }
+
+            if (auto* vstArr = masterObj->getProperty("vstPlugins").getArray())
+            {
+                for (const auto& vstVar : *vstArr)
+                {
+                    auto* vstObj = vstVar.getDynamicObject();
+                    if (vstObj == nullptr) continue;
+                    juce::File vstFile(vstObj->getProperty("path").toString());
+                    if (!vstFile.exists()) continue;
+                    juce::OwnedArray<juce::PluginDescription> descriptions;
+                    for (int i = 0; i < pluginFmtMgr.getNumFormats(); ++i)
+                    {
+                        pluginFmtMgr.getFormat(i)->findAllTypesForFile(descriptions, vstFile.getFullPathName());
+                        if (!descriptions.isEmpty()) break;
+                    }
+                    if (descriptions.isEmpty()) continue;
+                    juce::String error;
+                    auto instance = pluginFmtMgr.createPluginInstance(*descriptions[0], sampleRate, blockSize, error);
+                    if (instance == nullptr) continue;
+                    juce::MemoryBlock stateMem;
+                    if (stateMem.fromBase64Encoding(vstObj->getProperty("stateBase64").toString()))
+                        instance->setStateInformation(stateMem.getData(), (int)stateMem.getSize());
+                    const bool bypassed = vstObj->hasProperty("bypassed")
+                        ? (bool)vstObj->getProperty("bypassed")
+                        : (instance->getBypassParameter() != nullptr && instance->getBypassParameter()->getValue() > 0.5f);
+                    loadedMasterPluginPaths.add(vstFile.getFullPathName());
+                    loadedMasterPlugins.add(std::move(instance));
+                    // Keep the bypass state aligned with the plugin list order.
+                    loadedMasterVstBypassed.add(bypassed);
+                }
+            }
+        }
+
+        // Commit only after the file has been parsed and the replacement model built.
+        // A malformed or partially readable session therefore cannot wipe the open project.
+        tracks.clear(true);
+        while (!loadedTracks.isEmpty())
+            tracks.add(loadedTracks.removeAndReturn(0));
+        outRegions = std::move(loadedRegions);
+        outBpm = loadedBpm;
+
+        if (masterTrack != nullptr)
+        {
+            masterTrack->getNativeEffects().clear(true);
+            masterTrack->clearVstPlugins();
+            while (!loadedMasterEffects.isEmpty())
+                masterTrack->addNativeEffect(std::unique_ptr<NativeEffect>(loadedMasterEffects.removeAndReturn(0)));
+            while (!loadedMasterPlugins.isEmpty())
+                masterTrack->addVstPlugin(std::unique_ptr<juce::AudioPluginInstance>(loadedMasterPlugins.removeAndReturn(0)));
+            masterTrack->vstFilePaths = loadedMasterPluginPaths;
+            for (int i = 0; i < loadedMasterVstBypassed.size(); ++i)
+                masterTrack->setVstPluginBypassed(i, loadedMasterVstBypassed[i]);
+        }
+        if (outMasterGain != nullptr)
+            *outMasterGain = loadedMasterGain;
         return true;
     }
 };

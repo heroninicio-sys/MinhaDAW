@@ -1,16 +1,9 @@
 #pragma once
 #include <JuceHeader.h>
-#include <cmath>
-#include <vector>
+#include <atomic>
 #include "AudioClip.h"
 #include "MidiClip.h"
 #include "NativeDSPPlugins.h"
-
-struct EnvelopePoint
-{
-    double timeSec = 0.0;
-    float value = 1.0f; // 0.0 a 1.5 para volume, -1.0 a 1.0 para pan
-};
 
 class AudioTrack
 {
@@ -37,15 +30,20 @@ public:
 
         for (auto* fx : nativeEffects)
             fx->prepare(currentSampleRate, currentBlockSize);
+        for (auto* clip : audioClips)
+            clip->prepareToPlay(currentBlockSize, currentSampleRate);
 
         trackBuffer.setSize(2, currentBlockSize);
         tempClipBuffer.setSize(2, currentBlockSize);
+        recordInputBuffer.setSize(2, currentBlockSize);
     }
 
     void releaseResources()
     {
         for (auto* vst : vstPlugins)
             vst->releaseResources();
+        for (auto* clip : audioClips)
+            clip->releaseResources();
     }
 
     void addNativeEffect(std::unique_ptr<NativeEffect> fx)
@@ -56,62 +54,31 @@ public:
 
     void addVstPlugin(std::unique_ptr<juce::AudioPluginInstance> vst)
     {
+        if (vst == nullptr) return;
         vst->prepareToPlay(currentSampleRate, currentBlockSize);
         vstPlugins.add(std::move(vst));
+        vstBypassed.add(false);
+    }
+
+    bool isVstPluginBypassed(int index) const
+    {
+        if (index < 0 || index >= vstPlugins.size()) return false;
+        if (auto* bypassParameter = vstPlugins[index]->getBypassParameter())
+            return bypassParameter->getValue() > 0.5f;
+        return index < vstBypassed.size() ? vstBypassed[index] : false;
+    }
+
+    void setVstPluginBypassed(int index, bool shouldBypass)
+    {
+        if (index < 0 || index >= vstPlugins.size() || index >= vstBypassed.size()) return;
+        vstBypassed.set(index, shouldBypass);
+        if (auto* bypassParameter = vstPlugins[index]->getBypassParameter())
+            bypassParameter->setValueNotifyingHost(shouldBypass ? 1.0f : 0.0f);
     }
 
     bool hasActiveEffects() const
     {
         return !vstPlugins.isEmpty() || !nativeEffects.isEmpty();
-    }
-
-    // --- ENVELOPES DE AUTOMAÇÃO DA TRACK ---
-    void addOrUpdateVolumeEnvelopePoint(double timeSec, float val)
-    {
-        const juce::ScopedLock sl(envLock);
-        val = juce::jlimit(0.0f, 1.5f, val);
-        for (auto& pt : volumeEnvelopePoints)
-        {
-            if (std::abs(pt.timeSec - timeSec) < 0.02)
-            {
-                pt.value = val;
-                return;
-            }
-        }
-        volumeEnvelopePoints.push_back({ juce::jmax(0.0, timeSec), val });
-        std::sort(volumeEnvelopePoints.begin(), volumeEnvelopePoints.end(),
-                  [](const EnvelopePoint& a, const EnvelopePoint& b) { return a.timeSec < b.timeSec; });
-    }
-
-    float evaluateVolumeEnvelopeAt(double timeSec) const
-    {
-        const juce::ScopedLock sl(envLock);
-        if (!showVolumeEnvelope || volumeEnvelopePoints.empty())
-            return gain;
-
-        if (timeSec <= volumeEnvelopePoints.front().timeSec)
-            return volumeEnvelopePoints.front().value;
-        if (timeSec >= volumeEnvelopePoints.back().timeSec)
-            return volumeEnvelopePoints.back().value;
-
-        for (size_t i = 0; i + 1 < volumeEnvelopePoints.size(); ++i)
-        {
-            const auto& p0 = volumeEnvelopePoints[i];
-            const auto& p1 = volumeEnvelopePoints[i + 1];
-            if (timeSec >= p0.timeSec && timeSec <= p1.timeSec)
-            {
-                double span = juce::jmax(0.0001, p1.timeSec - p0.timeSec);
-                float t = (float)((timeSec - p0.timeSec) / span);
-                return p0.value + t * (p1.value - p0.value);
-            }
-        }
-        return gain;
-    }
-
-    std::vector<EnvelopePoint> getVolumeEnvelopeCopy() const
-    {
-        const juce::ScopedLock sl(envLock);
-        return volumeEnvelopePoints;
     }
 
     void injectLiveMidiNote(int noteNumber, bool isNoteOn)
@@ -138,18 +105,37 @@ public:
                       bool anyTrackSoloed)
     {
         const int numSamples = masterOutput.numSamples;
-        if (trackBuffer.getNumSamples() < numSamples)
+        // The reader cursor must advance by exactly the active callback size.
+        // Some audio devices deliver variable-sized blocks after prepareToPlay.
+        if (trackBuffer.getNumSamples() != numSamples)
         {
             trackBuffer.setSize(2, numSamples, false, false, true);
             tempClipBuffer.setSize(2, numSamples, false, false, true);
+            recordInputBuffer.setSize(2, numSamples, false, false, true);
         }
 
         trackBuffer.clear();
         trackMidiBuffer.clear();
+        const float trackGain = gain.load();
+        const float trackPan = pan.load();
+        const bool trackMuted = isMuted.load();
+        const bool trackSoloed = isSoloed.load();
+        const bool trackArmed = isArmed.load();
+        const bool trackMonitoring = isMonitoring.load();
 
-        if (isArmed && isRecording.load() && threadedWriter != nullptr && hardwareInput != nullptr && numInputChannels > 0)
+        if (trackArmed && isRecording.load() && threadedWriter != nullptr && hardwareInput != nullptr && numInputChannels > 0)
         {
-            threadedWriter->write(hardwareInput, numSamples);
+            // The WAV writer is stereo. Duplicate mono input instead of passing
+            // a one-channel pointer array to a two-channel writer.
+            const float* leftInput = hardwareInput[0];
+            const float* rightInput = (numInputChannels > 1 && hardwareInput[1] != nullptr)
+                                        ? hardwareInput[1] : leftInput;
+            if (leftInput != nullptr && rightInput != nullptr)
+            {
+                recordInputBuffer.copyFrom(0, 0, leftInput, numSamples);
+                recordInputBuffer.copyFrom(1, 0, rightInput, numSamples);
+                threadedWriter->write(recordInputBuffer.getArrayOfReadPointers(), numSamples);
+            }
 
             float inPeak = 0.0f;
             for (int ch = 0; ch < numInputChannels; ++ch)
@@ -161,12 +147,14 @@ public:
                 }
             }
 
-            liveRecordSamplesWritten += numSamples;
+            liveRecordSamplesWritten.fetch_add(numSamples);
             const juce::ScopedLock rl(liveWaveLock);
-            liveRecordPeaks.push_back(inPeak);
+            // Keep the live waveform bounded: no vector growth on the audio thread.
+            if (liveRecordPeaks.size() < 16384)
+                liveRecordPeaks.push_back(inPeak);
         }
 
-        if (isMonitoring && hardwareInput != nullptr && numInputChannels > 0)
+        if (trackMonitoring && hardwareInput != nullptr && numInputChannels > 0)
         {
             for (int ch = 0; ch < 2; ++ch)
             {
@@ -194,13 +182,16 @@ public:
             }
         }
 
-        for (auto* vst : vstPlugins)
-            vst->processBlock(trackBuffer, trackMidiBuffer);
+        for (int i = 0; i < vstPlugins.size(); ++i)
+        {
+            auto* vst = vstPlugins[i];
+            const bool isBypassed = isVstPluginBypassed(i);
+            if (!isBypassed || vst->getBypassParameter() != nullptr)
+                vst->processBlock(trackBuffer, trackMidiBuffer);
+        }
 
         for (auto* fx : nativeEffects)
             fx->process(trackBuffer);
-
-        float effectiveGain = showVolumeEnvelope ? evaluateVolumeEnvelopeAt(globalPlayheadTime) : gain;
 
         float blockPeak = 0.0f;
         for (int ch = 0; ch < trackBuffer.getNumChannels(); ++ch)
@@ -212,16 +203,16 @@ public:
             blockPeak = juce::jmax(blockPeak, std::abs(r.getStart()), std::abs(r.getEnd()));
         }
 
-        float scaledPeak = blockPeak * effectiveGain;
+        float scaledPeak = blockPeak * trackGain;
         float prevPeak = currentPeakLevel.load();
         currentPeakLevel.store(scaledPeak > prevPeak ? scaledPeak : prevPeak * 0.88f);
 
-        bool shouldBeAudible = !isMuted && (!anyTrackSoloed || isSoloed);
+        bool shouldBeAudible = !trackMuted && (!anyTrackSoloed || trackSoloed);
         if (shouldBeAudible && masterOutput.buffer->getNumChannels() > 0)
         {
-            float angle = (pan + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
-            float leftGain  = effectiveGain * std::cos(angle);
-            float rightGain = effectiveGain * std::sin(angle);
+            float angle = (trackPan + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
+            float leftGain  = trackGain * std::cos(angle);
+            float rightGain = trackGain * std::sin(angle);
 
             masterOutput.buffer->addFrom(0, masterOutput.startSample, trackBuffer, 0, 0, numSamples, leftGain);
             if (masterOutput.buffer->getNumChannels() > 1)
@@ -236,7 +227,10 @@ public:
     {
         auto clip = std::make_unique<AudioClip>(file, formatManager, startTimeOnTimeline);
         if (clip->duration > 0.0)
+        {
+            clip->prepareToPlay(currentBlockSize, currentSampleRate);
             audioClips.add(std::move(clip));
+        }
     }
 
     MidiClip* createOrGetMidiClipAt(double startBeat, double lengthBeats = 8.0)
@@ -265,6 +259,7 @@ public:
                 double rightDuration = clip->getTimelineEnd() - splitTimeSeconds;
 
                 auto rightClip = clip->cloneClip(formatManager);
+                rightClip->prepareToPlay(currentBlockSize, currentSampleRate);
                 rightClip->timelineStart     = splitTimeSeconds;
                 rightClip->sourceStartOffset = clip->sourceStartOffset + leftDuration;
                 rightClip->duration          = rightDuration;
@@ -298,7 +293,7 @@ public:
         recordedFile = targetFile;
         recordingStartPos = juce::jmax(0.0, recordStartTimelinePos - roundTripLatencySec);
         pendingLatencyTrimSec = (recordStartTimelinePos < roundTripLatencySec) ? (roundTripLatencySec - recordStartTimelinePos) : 0.0;
-        liveRecordSamplesWritten = 0;
+        liveRecordSamplesWritten.store(0);
 
         {
             const juce::ScopedLock rl(liveWaveLock);
@@ -334,6 +329,7 @@ public:
                 {
                     clip->sourceStartOffset = pendingLatencyTrimSec;
                     clip->duration -= pendingLatencyTrimSec;
+                    clip->prepareToPlay(currentBlockSize, currentSampleRate);
                     audioClips.add(std::move(clip));
                 }
             }
@@ -347,7 +343,7 @@ public:
     double getLiveRecordingStartSec() const { return recordingStartPos; }
     double getLiveRecordingDurationSec() const
     {
-        return (currentSampleRate > 0.0) ? ((double)liveRecordSamplesWritten / currentSampleRate) : 0.0;
+        return (currentSampleRate > 0.0) ? ((double)liveRecordSamplesWritten.load() / currentSampleRate) : 0.0;
     }
 
     std::vector<float> getLiveRecordingPeaksSnapshot() const
@@ -376,21 +372,27 @@ public:
     juce::OwnedArray<NativeEffect>& getNativeEffects() { return nativeEffects; }
     juce::OwnedArray<juce::AudioPluginInstance>& getVstPlugins() { return vstPlugins; }
 
-    bool isArmed = false;
-    bool isMonitoring = false;
-    bool isMuted = false;
-    bool isSoloed = false;
-    bool pinnedToTop = false;
-    bool controlsLocked = false;
-    bool heightLocked = false;
-    bool showVolumeEnvelope = false;
-    bool showPanEnvelope = false;
-    int folderDepth = 0; // 0 = normal, 1 = pasta/agrupada, -1 = fim de pasta
-    int spacerBeforePx = 0;
-    int spacerAfterPx = 0;
+    void removeVstPlugin(int index)
+    {
+        if (index < 0 || index >= vstPlugins.size()) return;
+        vstPlugins.remove(index, true);
+        if (index < vstBypassed.size()) vstBypassed.remove(index);
+        if (index < vstFilePaths.size()) vstFilePaths.remove(index);
+    }
 
-    float gain = 0.85f;
-    float pan = 0.0f;
+    void clearVstPlugins()
+    {
+        vstPlugins.clear(true);
+        vstBypassed.clear();
+        vstFilePaths.clear();
+    }
+
+    std::atomic<bool> isArmed { false };
+    std::atomic<bool> isMonitoring { false };
+    std::atomic<bool> isMuted { false };
+    std::atomic<bool> isSoloed { false };
+    std::atomic<float> gain { 0.85f };
+    std::atomic<float> pan { 0.0f };
     std::atomic<float> currentPeakLevel { 0.0f };
     juce::StringArray vstFilePaths;
 
@@ -403,12 +405,11 @@ private:
     juce::OwnedArray<MidiClip> midiClips;
     juce::OwnedArray<NativeEffect> nativeEffects;
     juce::OwnedArray<juce::AudioPluginInstance> vstPlugins;
-
-    mutable juce::CriticalSection envLock;
-    std::vector<EnvelopePoint> volumeEnvelopePoints;
+    juce::Array<bool> vstBypassed;
 
     juce::AudioBuffer<float> trackBuffer;
     juce::AudioBuffer<float> tempClipBuffer;
+    juce::AudioBuffer<float> recordInputBuffer;
     juce::MidiBuffer trackMidiBuffer;
 
     juce::CriticalSection liveMidiLock;
@@ -416,7 +417,7 @@ private:
 
     mutable juce::CriticalSection liveWaveLock;
     std::vector<float> liveRecordPeaks;
-    juce::int64 liveRecordSamplesWritten = 0;
+    std::atomic<juce::int64> liveRecordSamplesWritten { 0 };
 
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> threadedWriter;
     juce::File recordedFile;

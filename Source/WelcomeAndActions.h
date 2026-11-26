@@ -51,9 +51,9 @@ public:
         g.fillAll(juce::Colours::black.withAlpha(0.78f));
 
         auto card = getLocalBounds().withSizeKeepingCentre(540, 310);
-        g.setColour(juce::Colour(0xff1c1c24));
+        g.setColour(juce::Colour(0xff142337));
         g.fillRoundedRectangle(card.toFloat(), 10.0f);
-        g.setColour(juce::Colour(0xff00b4d8));
+        g.setColour(juce::Colour(0xff16d8e8));
         g.drawRoundedRectangle(card.toFloat(), 10.0f, 1.5f);
 
         auto inner = card.reduced(28, 22);
@@ -119,7 +119,7 @@ public:
 
     ActionListWindow(std::vector<ActionItem> actions)
         : DocumentWindow("Action List - Lista de Acoes e Atalhos [?]",
-                         juce::Colour(0xff1a1a22),
+                         juce::Colour(0xff101d2c),
                          DocumentWindow::allButtons)
     {
         setUsingNativeTitleBar(true);
@@ -143,7 +143,7 @@ private:
             for (auto& item : actionItems)
             {
                 auto* btn = buttons.add(new juce::TextButton(item.shortcut + "   ->   " + item.description));
-                btn->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff262632));
+                btn->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff172638));
                 auto fn = item.execute;
                 btn->onClick = [this, fn]
                 {
@@ -155,7 +155,7 @@ private:
             setSize(560, 520);
         }
 
-        void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff16161d)); }
+        void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff08111d)); }
 
         void resized() override
         {
