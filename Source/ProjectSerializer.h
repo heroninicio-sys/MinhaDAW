@@ -51,12 +51,12 @@ public:
         {
             auto* tObj = new juce::DynamicObject();
             tObj->setProperty("name", track->getName());
-            tObj->setProperty("gain", track->gain);
-            tObj->setProperty("pan", track->pan);
-            tObj->setProperty("muted", track->isMuted);
-            tObj->setProperty("soloed", track->isSoloed);
-            tObj->setProperty("armed", track->isArmed);
-            tObj->setProperty("monitoring", track->isMonitoring);
+            tObj->setProperty("gain", track->gain.load());
+            tObj->setProperty("pan", track->pan.load());
+            tObj->setProperty("muted", track->isMuted.load());
+            tObj->setProperty("soloed", track->isSoloed.load());
+            tObj->setProperty("armed", track->isArmed.load());
+            tObj->setProperty("monitoring", track->isMonitoring.load());
 
             juce::Array<juce::var> audioClipsArr;
             for (auto* c : track->getClips())
@@ -221,12 +221,12 @@ public:
 
             auto* track = loadedTracks.add(new AudioTrack(tObj->getProperty("name").toString(), audioFmtMgr, diskThread));
             track->prepareToPlay(blockSize, sampleRate);
-            track->gain         = (float)tObj->getProperty("gain");
-            track->pan          = tObj->hasProperty("pan") ? (float)tObj->getProperty("pan") : 0.0f;
-            track->isMuted      = (bool)tObj->getProperty("muted");
-            track->isSoloed     = (bool)tObj->getProperty("soloed");
-            track->isArmed      = (bool)tObj->getProperty("armed");
-            track->isMonitoring = tObj->hasProperty("monitoring") ? (bool)tObj->getProperty("monitoring") : false;
+            track->gain.store((float)tObj->getProperty("gain"));
+            track->pan.store(tObj->hasProperty("pan") ? (float)tObj->getProperty("pan") : 0.0f);
+            track->isMuted.store((bool)tObj->getProperty("muted"));
+            track->isSoloed.store((bool)tObj->getProperty("soloed"));
+            track->isArmed.store((bool)tObj->getProperty("armed"));
+            track->isMonitoring.store(tObj->hasProperty("monitoring") ? (bool)tObj->getProperty("monitoring") : false);
 
             if (auto* aClips = tObj->getProperty("audioClips").getArray())
             {
