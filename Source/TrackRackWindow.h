@@ -1,12 +1,13 @@
 #pragma once
 #include <JuceHeader.h>
+#include <cmath>
 #include "AudioTrack.h"
 #include "PluginScanner.h"
 
 class StudioKnobLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    StudioKnobLookAndFeel(juce::Colour neonCol) : ringColour(neonCol) {}
+    explicit StudioKnobLookAndFeel(juce::Colour neonCol) : ringColour(neonCol) {}
 
     void drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height,
                           float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
@@ -156,7 +157,6 @@ public:
         g.fillRoundedRectangle(b, 8.0f);
 
         bool isActive = powerBtn.getToggleState();
-        // Brilho externo neon colorido
         g.setColour(isActive ? neonColour.withAlpha(0.25f) : juce::Colours::transparentBlack);
         g.drawRoundedRectangle(b.expanded(1.0f), 9.0f, 3.0f);
         g.setColour(isActive ? neonColour.withAlpha(0.85f) : juce::Colour(0xff2a4057));
@@ -298,19 +298,25 @@ public:
                 vst->getName().substring(0, 2).toUpperCase(),
                 vstPalette[i % 4],
                 track.isVstPluginBypassed(i),
-                [this, vst]
+                [safeThis = juce::Component::SafePointer<TrackRackComponent>(this), vst]
                 {
+                    if (safeThis == nullptr) return;
+                    const juce::ScopedLock lock(safeThis->audioLock);
+                    if (!safeThis->track.getVstPlugins().contains(vst)) return;
                     if (vst->hasEditor())
                     {
-                        auto* win = activeWindows.add(new PluginEditorWindow(vst->getName(), juce::Colours::black));
-                        win->setContentOwned(vst->createEditor(), true);
-                        win->setVisible(true);
+                        if (auto* editor = vst->createEditor())
+                        {
+                            auto* win = safeThis->activeWindows.add(new PluginEditorWindow(vst->getName(), juce::Colours::black));
+                            win->setContentOwned(editor, true);
+                            win->setVisible(true);
+                        }
                     }
                 },
                 [safeThis = juce::Component::SafePointer<TrackRackComponent>(this), vst](bool shouldBypass)
                 {
                     if (safeThis == nullptr) return;
-                    const juce::ScopedLock sl(safeThis->audioLock);
+                    const juce::ScopedLock lock(safeThis->audioLock);
                     const int currentIndex = safeThis->track.getVstPlugins().indexOf(vst);
                     if (currentIndex < 0) return;
                     safeThis->track.setVstPluginBypassed(currentIndex, shouldBypass);
@@ -322,12 +328,10 @@ public:
                         if (safeThis == nullptr) return;
                         safeThis->activeWindows.clear(true);
                         {
-                            const juce::ScopedLock sl(safeThis->audioLock);
+                            const juce::ScopedLock lock(safeThis->audioLock);
                             const int currentIndex = safeThis->track.getVstPlugins().indexOf(vst);
                             if (currentIndex >= 0)
-                            {
                                 safeThis->track.removeVstPlugin(currentIndex);
-                            }
                         }
                         safeThis->rebuildList();
                     });
@@ -364,28 +368,35 @@ public:
                 badge,
                 neon,
                 fx->bypassed.load(),
-                [this, fx]
+                [safeThis = juce::Component::SafePointer<TrackRackComponent>(this), fx]
                 {
-                    auto editor = fx->createEditor();
-                    if (editor != nullptr)
+                    if (safeThis == nullptr) return;
+                    const juce::ScopedLock lock(safeThis->audioLock);
+                    if (!safeThis->track.getNativeEffects().contains(fx)) return;
+                    if (auto editor = fx->createEditor())
                     {
-                        auto* win = activeWindows.add(new PluginEditorWindow(fx->getName(), juce::Colour(0xff1e1e24)));
+                        auto* win = safeThis->activeWindows.add(new PluginEditorWindow(fx->getName(), juce::Colour(0xff1e1e24)));
                         win->setContentOwned(editor.release(), true);
                         win->centreWithSize(win->getWidth(), win->getHeight());
                         win->setVisible(true);
                     }
                 },
-                [fx](bool isBypassed) { fx->bypassed.store(isBypassed); },
-                [safeThis = juce::Component::SafePointer<TrackRackComponent>(this), i]
+                [safeThis = juce::Component::SafePointer<TrackRackComponent>(this), fx](bool isBypassed)
                 {
-                    juce::MessageManager::callAsync([safeThis, i]
+                    if (safeThis == nullptr) return;
+                    const juce::ScopedLock lock(safeThis->audioLock);
+                    if (safeThis->track.getNativeEffects().contains(fx))
+                        fx->bypassed.store(isBypassed);
+                },
+                [safeThis = juce::Component::SafePointer<TrackRackComponent>(this), fx]
+                {
+                    juce::MessageManager::callAsync([safeThis, fx]
                     {
                         if (safeThis == nullptr) return;
                         safeThis->activeWindows.clear(true);
                         {
-                            const juce::ScopedLock sl(safeThis->audioLock);
-                            if (i < safeThis->track.getNativeEffects().size())
-                                safeThis->track.getNativeEffects().remove(i, true);
+                            const juce::ScopedLock lock(safeThis->audioLock);
+                            safeThis->track.getNativeEffects().removeObject(fx, true);
                         }
                         safeThis->rebuildList();
                     });
@@ -394,33 +405,33 @@ public:
 
             if (auto* rev = dynamic_cast<ReverbEffect*>(fx))
             {
-                card->addMacroKnob("Mix",       0.0f, 100.0f, rev->wetLevel * 100.0f, "%",  [rev](float v) { rev->wetLevel = v / 100.0f; });
-                card->addMacroKnob("Room Size", 0.0f, 100.0f, rev->roomSize * 100.0f, "%",  [rev](float v) { rev->roomSize = v / 100.0f; });
-                card->addMacroKnob("Damping",   0.0f, 100.0f, rev->damping * 100.0f,  "%",  [rev](float v) { rev->damping  = v / 100.0f; });
+                card->addMacroKnob("Mix",       0.0f, 100.0f, rev->wetLevel.load() * 100.0f, "%",  [rev](float v) { rev->wetLevel.store(v / 100.0f); });
+                card->addMacroKnob("Room Size", 0.0f, 100.0f, rev->roomSize.load() * 100.0f, "%",  [rev](float v) { rev->roomSize.store(v / 100.0f); });
+                card->addMacroKnob("Damping",   0.0f, 100.0f, rev->damping.load() * 100.0f,  "%",  [rev](float v) { rev->damping.store(v / 100.0f); });
             }
             else if (auto* dly = dynamic_cast<DelayEffect*>(fx))
             {
-                card->addMacroKnob("Mix",      0.0f,  100.0f,  dly->mix * 100.0f,      "%",  [dly](float v) { dly->mix = v / 100.0f; });
-                card->addMacroKnob("Time",     10.0f, 2000.0f, dly->delayTimeMs,       "ms", [dly](float v) { dly->delayTimeMs = v; });
-                card->addMacroKnob("Feedback", 0.0f,  90.0f,   dly->feedback * 100.0f, "%",  [dly](float v) { dly->feedback = v / 100.0f; });
+                card->addMacroKnob("Mix",      0.0f,  100.0f,  dly->mix.load() * 100.0f,      "%",  [dly](float v) { dly->mix.store(v / 100.0f); });
+                card->addMacroKnob("Time",     10.0f, 2000.0f, dly->delayTimeMs.load(),       "ms", [dly](float v) { dly->delayTimeMs.store(v); });
+                card->addMacroKnob("Feedback", 0.0f,  90.0f,   dly->feedback.load() * 100.0f, "%",  [dly](float v) { dly->feedback.store(v / 100.0f); });
             }
             else if (auto* cmp = dynamic_cast<CompressorEffect*>(fx))
             {
-                card->addMacroKnob("Thresh", -60.0f, 0.0f,   cmp->thresholdDb, "dB", [cmp](float v) { cmp->thresholdDb = v; });
-                card->addMacroKnob("Ratio",  1.0f,   20.0f,  cmp->ratio,       ":1", [cmp](float v) { cmp->ratio = v; });
-                card->addMacroKnob("Attack", 0.5f,   150.0f, cmp->attackMs,    "ms", [cmp](float v) { cmp->attackMs = v; });
-                card->addMacroKnob("Makeup", 0.0f,   24.0f,  cmp->makeupDb,    "dB", [cmp](float v) { cmp->makeupDb = v; });
+                card->addMacroKnob("Thresh", -60.0f, 0.0f,   cmp->thresholdDb.load(), "dB", [cmp](float v) { cmp->thresholdDb.store(v); });
+                card->addMacroKnob("Ratio",  1.0f,   20.0f,  cmp->ratio.load(),       ":1", [cmp](float v) { cmp->ratio.store(v); });
+                card->addMacroKnob("Attack", 0.5f,   150.0f, cmp->attackMs.load(),    "ms", [cmp](float v) { cmp->attackMs.store(v); });
+                card->addMacroKnob("Makeup", 0.0f,   24.0f,  cmp->makeupDb.load(),    "dB", [cmp](float v) { cmp->makeupDb.store(v); });
             }
             else if (auto* dst = dynamic_cast<DistortionEffect*>(fx))
             {
-                card->addMacroKnob("Drive",  1.0f,  40.0f, dst->drive,      "x",  [dst](float v) { dst->drive = v; });
-                card->addMacroKnob("Mix",    0.0f,  100.0f,dst->mix * 100.0f,"%", [dst](float v) { dst->mix = v / 100.0f; });
-                card->addMacroKnob("Output", -24.0f,6.0f,  dst->outputDb,   "dB", [dst](float v) { dst->outputDb = v; });
+                card->addMacroKnob("Drive",  1.0f,  40.0f, dst->drive.load(),        "x",  [dst](float v) { dst->drive.store(v); });
+                card->addMacroKnob("Mix",    0.0f,  100.0f,dst->mix.load() * 100.0f, "%",  [dst](float v) { dst->mix.store(v / 100.0f); });
+                card->addMacroKnob("Output", -24.0f,6.0f,  dst->outputDb.load(),     "dB", [dst](float v) { dst->outputDb.store(v); });
             }
             else if (auto* at = dynamic_cast<AutoTuneEffect*>(fx))
             {
-                card->addMacroKnob("Speed", 5.0f, 100.0f, at->retuneSpeed * 100.0f, "%", [at](float v) { at->retuneSpeed = v / 100.0f; });
-                card->addMacroKnob("Mix",   0.0f, 100.0f, at->mix * 100.0f,         "%", [at](float v) { at->mix = v / 100.0f; });
+                card->addMacroKnob("Speed", 5.0f, 100.0f, at->retuneSpeed.load() * 100.0f, "%", [at](float v) { at->retuneSpeed.store(v / 100.0f); });
+                card->addMacroKnob("Mix",   0.0f, 100.0f, at->mix.load() * 100.0f,         "%", [at](float v) { at->mix.store(v / 100.0f); });
             }
 
             modulesContainer.addAndMakeVisible(card);
@@ -517,16 +528,12 @@ private:
     void showNativeMenu()
     {
         juce::PopupMenu menu;
-        juce::PopupMenu eqSubMenu;
-        for (int b = 8; b <= 120; b += 8)
-            eqSubMenu.addItem(100 + b, "EQ " + juce::String(b) + " Canais/Bandas");
-
-        menu.addSubMenu("Equalizador Multi-Banda (8 a 120 ch)", eqSubMenu);
-        menu.addItem(1, "Compressor Dinamico");
-        menu.addItem(2, "Distorcao / Overdrive");
-        menu.addItem(3, "Auto-Tune Vocal (Pitch Correction)");
-        menu.addItem(4, "Reverb Stereo");
-        menu.addItem(5, "Delay Stereo");
+        menu.addItem(100, "Equalizador Multicanal");
+        menu.addItem(1,   "Compressor Dinamico");
+        menu.addItem(2,   "Distorcao / Overdrive");
+        menu.addItem(3,   "Auto-Tune Vocal (Pitch Correction)");
+        menu.addItem(4,   "Reverb Stereo");
+        menu.addItem(5,   "Delay Stereo");
 
         juce::Component::SafePointer<TrackRackComponent> safeThis(this);
         menu.showMenuAsync(juce::PopupMenu::Options(), [safeThis](int res)
@@ -534,7 +541,7 @@ private:
             if (safeThis == nullptr || res == 0) return;
 
             std::unique_ptr<NativeEffect> fx;
-            if (res >= 108 && res <= 220) fx = std::make_unique<MultiBandEQEffect>(res - 100);
+            if (res == 100)     fx = std::make_unique<MultiChannelEQEffect>(16);
             else if (res == 1) fx = std::make_unique<CompressorEffect>();
             else if (res == 2) fx = std::make_unique<DistortionEffect>();
             else if (res == 3) fx = std::make_unique<AutoTuneEffect>();
