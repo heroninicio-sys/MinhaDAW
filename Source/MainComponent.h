@@ -1457,6 +1457,3 @@ private:
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
-```[cite: 39, 41]
-
-Faça commit desse arquivo no GitHub e rode novamente o workflow para confirmar que o **Build Release** conclui sem erros[cite: 41].
