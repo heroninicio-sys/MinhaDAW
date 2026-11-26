@@ -11,7 +11,6 @@ public:
 
     void initialise(const juce::String& commandLine) override
     {
-        // Se foi iniciado como worker de varredura de plugin, testa o plugin e encerra sem abrir janela
         int workerExit = PluginScannerEngine::runWorkerProcessIfRequested(commandLine);
         if (workerExit >= 0)
         {
