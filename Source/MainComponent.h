@@ -188,8 +188,6 @@ public:
                 audioError = safeThis->deviceManager.initialise(0, 2, nullptr, true);
             }
 
-            // Register even when initial device discovery fails: selecting a device
-            // later in Preferences will then restart this callback automatically.
             safeThis->deviceManager.addAudioCallback(safeThis);
             if (audioError.isNotEmpty())
                 juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
@@ -239,12 +237,17 @@ public:
 
         if (key == juce::KeyPress::spaceKey)
         {
-            if (isPlaying) stopTransport();
+            if (isPlaying.load()) stopTransport();
             else startPlayback();
             return true;
         }
 
-        if (!ctrl && !alt && !shift && ch == 'r') { if (isRecording.load()) stopTransport(); else startRecording(); return true; }
+        if (!ctrl && !alt && !shift && ch == 'r')
+        {
+            if (isRecording.load()) stopTransport();
+            else startRecording();
+            return true;
+        }
         if (!ctrl && alt && ch == 's') { snapBtn.triggerClick(); return true; }
 
         if (!ctrl && alt && ch == 'g')
@@ -379,7 +382,7 @@ public:
         const bool canToggleSecondaryBus = hasSecondaryBus && hasPrimaryBus;
         const int inputCount = device->getActiveInputChannels().countNumberOfSetBits();
         juce::Component::SafePointer<MainComponent> safeThis(this);
-        juce::MessageManager::callAsync([safeThis, hasSecondaryBus, canToggleSecondaryBus, inputCount]
+        juce::MessageManager::callAsync([safeThis, hasSecondaryBus, hasPrimaryBus, canToggleSecondaryBus, inputCount]
         {
             if (safeThis == nullptr) return;
             safeThis->recBtn.setEnabled(inputCount > 0);
@@ -432,8 +435,6 @@ public:
         juce::AudioSourceChannelInfo bufferToFill(&outputBuffer, 0, numSamples);
         renderAudioBlock(bufferToFill, capturedChannels);
 
-        // The device may expose sparse channel masks (e.g. only outputs 3/4).
-        // Clear every non-null output first, then copy the internal stereo mix.
         for (int ch = 0; ch < numOutputChannels; ++ch)
             if (outputChannelData[ch] != nullptr)
                 juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
@@ -805,6 +806,118 @@ private:
         return 0.0;
     }
 
+    void moveTrackBetweenPositions(int fromIdx, int toIdx)
+    {
+        if (fromIdx < 0 || fromIdx >= tracks.size()) return;
+        int clampedTo = juce::jlimit(0, tracks.size() - 1, toIdx);
+        if (fromIdx == clampedTo) return;
+
+        {
+            const juce::ScopedLock sl(trackLock);
+            tracks.move(fromIdx, clampedTo);
+        }
+        rebuildTrackRowsFromModel();
+        rebuildMixerDock();
+        repaint();
+    }
+
+    void openTrackContextMenu(int trackIdx, TrackRowComponent& rowComp)
+    {
+        if (trackIdx < 0 || trackIdx >= tracks.size()) return;
+        AudioTrack* t = tracks[trackIdx];
+
+        juce::PopupMenu spacerSub;
+        spacerSub.addItem(101, "Insert spacer before tracks");
+        spacerSub.addItem(102, "Insert spacer after tracks");
+        spacerSub.addItem(103, "Remove spacers");
+
+        juce::PopupMenu folderSub;
+        folderSub.addItem(201, "Normal track");
+        folderSub.addItem(202, "Folder parent (agrupar abaixo)");
+        folderSub.addItem(203, "End of folder");
+
+        juce::PopupMenu envSub;
+        envSub.addItem(301, t->showVolumeEnvelope ? "Ocultar Envelope de Volume" : "Mostrar Envelope de Volume");
+        envSub.addItem(302, "Inserir Ponto de Envelope no Cursor");
+
+        juce::PopupMenu menu;
+        menu.addItem(1, t->pinnedToTop ? "Unpin track from top" : "Pin tracks to top of arrange view");
+        menu.addSubMenu("Visual spacer", spacerSub);
+        menu.addSeparator();
+        menu.addItem(2, "Insert new track\tCtrl+T");
+        menu.addItem(3, "Insert new track as first track");
+        menu.addItem(4, "Insert new track at end of track list");
+        menu.addSeparator();
+        menu.addItem(5, "Remove tracks");
+        menu.addItem(6, "Duplicate tracks");
+        menu.addSubMenu("Move tracks to folder", folderSub);
+        menu.addSeparator();
+        menu.addItem(7, "Lock track controls", true, t->controlsLocked);
+        menu.addItem(8, "Lock track height", true, t->heightLocked);
+        menu.addItem(9, "Lock track items", true, itemsLocked);
+        menu.addItem(10, "Automatic record-arm when track selected", true, t->isArmed);
+        menu.addSeparator();
+        menu.addSubMenu("Envelopes", envSub);
+
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&rowComp), [this, trackIdx](int res)
+        {
+            if (res == 0 || trackIdx < 0 || trackIdx >= tracks.size()) return;
+            AudioTrack* tr = tracks[trackIdx];
+
+            switch (res)
+            {
+                case 1: tr->pinnedToTop = !tr->pinnedToTop; break;
+                case 2: addNewTrack(); break;
+                case 3:
+                {
+                    const juce::ScopedLock sl(trackLock);
+                    auto* n = new AudioTrack("Track 1", audioFormatManager, backgroundThread);
+                    n->prepareToPlay(currentBlockSize.load(), currentSampleRate.load());
+                    tracks.insert(0, n);
+                    rebuildTrackRowsFromModel();
+                    rebuildMixerDock();
+                    break;
+                }
+                case 4: addNewTrack(); break;
+                case 5: deleteTrackAtIndex(trackIdx); break;
+                case 6:
+                {
+                    const juce::ScopedLock sl(trackLock);
+                    auto* dup = new AudioTrack(tr->getName() + " (Copy)", audioFormatManager, backgroundThread);
+                    dup->prepareToPlay(currentBlockSize.load(), currentSampleRate.load());
+                    dup->gain = tr->gain;
+                    dup->pan = tr->pan;
+                    tracks.insert(trackIdx + 1, dup);
+                    rebuildTrackRowsFromModel();
+                    rebuildMixerDock();
+                    break;
+                }
+                case 7: tr->controlsLocked = !tr->controlsLocked; break;
+                case 8: tr->heightLocked = !tr->heightLocked; break;
+                case 9: itemsLocked = !itemsLocked; updateGridParameters(); break;
+                case 10: tr->isArmed = !tr->isArmed; rebuildTrackRowsFromModel(); break;
+                case 101: tr->spacerBeforePx = 18; layoutTracks(); break;
+                case 102: tr->spacerAfterPx = 18; layoutTracks(); break;
+                case 103: tr->spacerBeforePx = 0; tr->spacerAfterPx = 0; layoutTracks(); break;
+                case 201: tr->folderDepth = 0; repaint(); break;
+                case 202: tr->folderDepth = 1; repaint(); break;
+                case 203: tr->folderDepth = -1; repaint(); break;
+                case 301:
+                    tr->showVolumeEnvelope = !tr->showVolumeEnvelope;
+                    if (tr->showVolumeEnvelope && tr->getVolumeEnvelopeCopy().empty())
+                        tr->addOrUpdateVolumeEnvelopePoint(0.0, tr->gain);
+                    repaint();
+                    break;
+                case 302:
+                    tr->showVolumeEnvelope = true;
+                    tr->addOrUpdateVolumeEnvelopePoint(globalTimelineSeconds.load(), tr->gain);
+                    repaint();
+                    break;
+                default: break;
+            }
+        });
+    }
+
     void createNewCleanProject()
     {
         stopTransport();
@@ -871,7 +984,9 @@ private:
                 [this](AudioTrack& tr, MidiClip& mc) { openPianoRoll(tr, mc); },
                 [this](double newPos) { seekTo(newPos); },
                 [this](TrackRowComponent* r, AudioClip* ac, MidiClip* mc) { handleSelection(r, ac, mc); },
-                [this](int delIdx) { deleteTrackAtIndex(delIdx); }
+                [this](int delIdx) { deleteTrackAtIndex(delIdx); },
+                [this](int fromIdx, int toIdx) { moveTrackBetweenPositions(fromIdx, toIdx); },
+                [this](int trIdx, TrackRowComponent& rComp) { openTrackContextMenu(trIdx, rComp); }
             ));
             row->onTrackStateChanged = [this] { bottomMixer.refreshMetersAndState(); };
             row->setPixelsPerSecond(pixelsPerSecond);
@@ -893,7 +1008,7 @@ private:
             { "Ctrl + P",         "Preferencias de Audio / ASIO",       [this] { showAudioSettings(); } },
             { "Ctrl + M",         "Mostrar / Ocultar Mixer",            [this] { mixerToggleBtn.triggerClick(); } },
             { "Ctrl + T",         "Criar nova faixa (Track)",           [this] { addNewTrack(); } },
-            { "Espaco",           "Play / Stop",                        [this] { if (isPlaying) stopTransport(); else startPlayback(); } },
+            { "Espaco",           "Play / Stop",                        [this] { if (isPlaying.load()) stopTransport(); else startPlayback(); } },
             { "R",                "Gravar / Parar gravacao",             [this] { if (isRecording.load()) stopTransport(); else startRecording(); } },
             { "Alt + S",          "Ativar / desativar Snap (grade)",    [this] { snapBtn.triggerClick(); } },
             { "Alt + G",          "Ativar / desativar linhas de grade", [this] { showGridLines = !showGridLines; updateGridParameters(); } },
@@ -1019,12 +1134,18 @@ private:
 
     void layoutTracks()
     {
-        int totalHeight = juce::jmax(0, juce::jmax(tracksViewport.getHeight(), trackRows.size() * trackRowHeight));
+        int curY = 0;
+        for (int i = 0; i < trackRows.size(); ++i)
+        {
+            auto& tr = trackRows[i]->getTrack();
+            curY += tr.spacerBeforePx;
+            trackRows[i]->setBounds(0, curY, juce::jmax(0, juce::jmax(tracksViewport.getWidth() - 12, (int)(300.0 * pixelsPerSecond) + 300)), trackRowHeight);
+            curY += trackRowHeight + tr.spacerAfterPx;
+        }
+
+        int totalHeight = juce::jmax(0, juce::jmax(tracksViewport.getHeight(), curY));
         int totalWidth  = juce::jmax(0, juce::jmax(tracksViewport.getWidth() - 12, (int)(300.0 * pixelsPerSecond) + 300));
         tracksContainer.setSize(totalWidth, totalHeight);
-
-        for (int i = 0; i < trackRows.size(); ++i)
-            trackRows[i]->setBounds(0, i * trackRowHeight, tracksContainer.getWidth(), trackRowHeight);
     }
 
     void startPlayback()
@@ -1118,9 +1239,10 @@ private:
         statusStateLabel.setText("[Stopped]", juce::dontSendNotification);
         statusStateLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
 
+        const double playheadNow = globalTimelineSeconds.load();
         for (int i = 0; i < tracks.size(); ++i)
         {
-            tracks[i]->stopRecording(globalTimelineSeconds);
+            tracks[i]->stopRecording(playheadNow);
             tracks[i]->sendAllNotesOff();
             if (i < trackRows.size())
                 trackRows[i]->rebuildThumbnails();
@@ -1131,13 +1253,14 @@ private:
     void seekTo(double seconds)
     {
         const juce::ScopedLock sl(trackLock);
-        globalTimelineSeconds = juce::jmax(0.0, seconds);
+        const double clamped = juce::jmax(0.0, seconds);
+        globalTimelineSeconds.store(clamped);
         metronome.reset();
         for (auto* track : tracks)
             track->sendAllNotesOff();
 
         for (auto* row : trackRows)
-            row->setPlayheadPosition(globalTimelineSeconds);
+            row->setPlayheadPosition(clamped);
         repaint(rulerArea);
     }
 
@@ -1146,21 +1269,22 @@ private:
         if (itemsLocked) return;
         bool anySplit = false;
         double xfade = autoCrossfadeEnabled ? 0.015 : 0.0;
+        const double splitTime = globalTimelineSeconds.load();
         {
             const juce::ScopedLock sl(trackLock);
             if (selectedRow != nullptr && selectedAudioClip != nullptr)
             {
                 auto& clips = selectedRow->getTrack().getClips();
                 if (clips.contains(selectedAudioClip) &&
-                    globalTimelineSeconds > selectedAudioClip->timelineStart + 0.05 &&
-                    globalTimelineSeconds < selectedAudioClip->getTimelineEnd() - 0.05)
+                    splitTime > selectedAudioClip->timelineStart + 0.05 &&
+                    splitTime < selectedAudioClip->getTimelineEnd() - 0.05)
                 {
-                    double leftDur  = globalTimelineSeconds - selectedAudioClip->timelineStart;
-                    double rightDur = selectedAudioClip->getTimelineEnd() - globalTimelineSeconds;
+                    double leftDur  = splitTime - selectedAudioClip->timelineStart;
+                    double rightDur = selectedAudioClip->getTimelineEnd() - splitTime;
 
                     auto rightClip = selectedAudioClip->cloneClip(audioFormatManager);
                     rightClip->prepareToPlay(currentBlockSize.load(), currentSampleRate.load());
-                    rightClip->timelineStart     = globalTimelineSeconds;
+                    rightClip->timelineStart     = splitTime;
                     rightClip->sourceStartOffset = selectedAudioClip->sourceStartOffset + leftDur;
                     rightClip->duration          = rightDur;
                     rightClip->fadeInDuration    = xfade;
@@ -1175,7 +1299,7 @@ private:
             else
             {
                 for (auto* track : tracks)
-                    if (track->splitClipsAt(globalTimelineSeconds))
+                    if (track->splitClipsAt(splitTime))
                         anySplit = true;
             }
         }
@@ -1241,7 +1365,7 @@ private:
         timecodeLabel.setText(juce::String::formatted("%d.%d.%02d / %d:%06.3f", barNum, beatInBar, hundredths, mins, secs),
                               juce::dontSendNotification);
 
-        if (isPlaying || isRecording)
+        if (isPlaying.load() || isRecording.load())
         {
             for (auto* row : trackRows)
                 row->setPlayheadPosition(playheadSeconds);
@@ -1341,7 +1465,6 @@ private:
             exportDialogWindow->toFront(true);
             return;
         }
-        // Recreate a dismissed render window so it snapshots the latest master gain.
         exportDialogWindow.reset();
         exportDialogWindow = AudioExporter::createExportDialogWindow(
             tracks, trackLock, currentSampleRate.load(), currentBlockSize.load(),
@@ -1441,7 +1564,6 @@ private:
 
     void showAudioSettings()
     {
-        // Device reconfiguration changes sample rate/block size; never leave a take half-open.
         stopTransport();
         if (audioSettingsWindow != nullptr)
         {
