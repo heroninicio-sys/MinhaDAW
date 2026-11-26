@@ -2,6 +2,7 @@
 #include <JuceHeader.h>
 #include <cmath>
 #include <utility>
+#include <vector>
 #include "AudioTrack.h"
 
 struct TimelineRegion
@@ -50,12 +51,12 @@ public:
         {
             auto* tObj = new juce::DynamicObject();
             tObj->setProperty("name", track->getName());
-            tObj->setProperty("gain", track->gain.load());
-            tObj->setProperty("pan", track->pan.load());
-            tObj->setProperty("muted", track->isMuted.load());
-            tObj->setProperty("soloed", track->isSoloed.load());
-            tObj->setProperty("armed", track->isArmed.load());
-            tObj->setProperty("monitoring", track->isMonitoring.load());
+            tObj->setProperty("gain", track->gain);
+            tObj->setProperty("pan", track->pan);
+            tObj->setProperty("muted", track->isMuted);
+            tObj->setProperty("soloed", track->isSoloed);
+            tObj->setProperty("armed", track->isArmed);
+            tObj->setProperty("monitoring", track->isMonitoring);
 
             juce::Array<juce::var> audioClipsArr;
             for (auto* c : track->getClips())
@@ -124,7 +125,6 @@ public:
 
         rootObj->setProperty("tracks", tracksArray);
 
-        // Persist the master insert chain separately from user tracks.
         auto* masterObj = new juce::DynamicObject();
         masterObj->setProperty("gain", juce::jlimit(0.0f, 1.5f, masterGain));
         juce::Array<juce::var> masterFxArray;
@@ -179,7 +179,6 @@ public:
         if (rootObj == nullptr)
             return false;
 
-        // Validate the complete top-level structure before touching the open session.
         auto* tracksArr = rootObj->getProperty("tracks").getArray();
         if (tracksArr == nullptr)
             return false;
@@ -244,7 +243,6 @@ public:
                             clip->fadeInDuration    = (double)cObj->getProperty("fadeIn");
                             clip->fadeOutDuration   = (double)cObj->getProperty("fadeOut");
                             clip->clipGain          = cObj->hasProperty("clipGain") ? (float)cObj->getProperty("clipGain") : 1.0f;
-                            clip->prepareToPlay(blockSize, sampleRate);
                             track->getClips().add(std::move(clip));
                         }
                     }
@@ -286,7 +284,7 @@ public:
                         juce::String typeId = fxObj->getProperty("typeId").toString();
                         std::unique_ptr<NativeEffect> fx;
 
-                        if (typeId == "NativeEQ")            fx = std::make_unique<MultiBandEQEffect>(8);
+                        if (typeId == "NativeEQ")            fx = std::make_unique<MultiChannelEQEffect>(16);
                         else if (typeId == "NativeComp")     fx = std::make_unique<CompressorEffect>();
                         else if (typeId == "NativeDist")     fx = std::make_unique<DistortionEffect>();
                         else if (typeId == "NativeAutoTune") fx = std::make_unique<AutoTuneEffect>();
@@ -295,7 +293,7 @@ public:
 
                         if (fx != nullptr)
                         {
-                            fx->bypassed = (bool)fxObj->getProperty("bypassed");
+                            fx->bypassed.store((bool)fxObj->getProperty("bypassed"));
                             fx->loadState(fxObj->getProperty("state"));
                             track->addNativeEffect(std::move(fx));
                         }
@@ -353,7 +351,7 @@ public:
                     if (fxObj == nullptr) continue;
                     const auto typeId = fxObj->getProperty("typeId").toString();
                     std::unique_ptr<NativeEffect> fx;
-                    if (typeId == "NativeEQ") fx = std::make_unique<MultiBandEQEffect>(8);
+                    if (typeId == "NativeEQ") fx = std::make_unique<MultiChannelEQEffect>(16);
                     else if (typeId == "NativeComp") fx = std::make_unique<CompressorEffect>();
                     else if (typeId == "NativeDist") fx = std::make_unique<DistortionEffect>();
                     else if (typeId == "NativeAutoTune") fx = std::make_unique<AutoTuneEffect>();
@@ -394,14 +392,11 @@ public:
                         : (instance->getBypassParameter() != nullptr && instance->getBypassParameter()->getValue() > 0.5f);
                     loadedMasterPluginPaths.add(vstFile.getFullPathName());
                     loadedMasterPlugins.add(std::move(instance));
-                    // Keep the bypass state aligned with the plugin list order.
                     loadedMasterVstBypassed.add(bypassed);
                 }
             }
         }
 
-        // Commit only after the file has been parsed and the replacement model built.
-        // A malformed or partially readable session therefore cannot wipe the open project.
         tracks.clear(true);
         while (!loadedTracks.isEmpty())
             tracks.add(loadedTracks.removeAndReturn(0));
