@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(MinhaDAW VERSION 1.0.0)
+project(MinhaDAW VERSION 1.1.0 DESCRIPTION "MinhaDAW Studio - JUCE Digital Audio Workstation" LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,7 +15,7 @@ FetchContent_MakeAvailable(JUCE)
 juce_add_gui_app(MinhaDAW
     PRODUCT_NAME "MinhaDAW Studio"
     COMPANY_NAME "AudioDev"
-    VERSION 1.0.0
+    VERSION 1.1.0
 )
 
 juce_generate_juce_header(MinhaDAW)
